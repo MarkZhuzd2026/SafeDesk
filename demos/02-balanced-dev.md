@@ -9,6 +9,7 @@
 ```bash
 curl -s -X POST $BASE/api/sandboxes \
   -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"name":"feature-branch","agent":"claude-code","policyId":"balanced","workspace":"/srv/workspaces/pay-service","credentials":["github-read","llm-gateway"],"mcpServers":["github","postgres-read"]}'
 ```
 
@@ -58,7 +59,7 @@ SBX=<SBX>
 ## 3. 审批启动
 
 ```bash
-curl -s -X POST $BASE/api/sandboxes/$SBX/approve
+curl -s -X POST -H "Authorization: Bearer $TOKEN" $BASE/api/sandboxes/$SBX/approve
 ```
 
 预期 `status` 变为 `running`。
@@ -66,7 +67,7 @@ curl -s -X POST $BASE/api/sandboxes/$SBX/approve
 ## 4. 确认凭据代签事件
 
 ```bash
-curl -s $BASE/api/events
+curl -s -H "Authorization: Bearer $TOKEN" $BASE/api/events
 ```
 
 预期能在事件流看到（节选）：
@@ -83,7 +84,7 @@ curl -s $BASE/api/events
 ## 5. 收尾
 
 ```bash
-curl -s -X POST $BASE/api/sandboxes/$SBX/terminate
+curl -s -X POST -H "Authorization: Bearer $TOKEN" $BASE/api/sandboxes/$SBX/terminate
 ```
 
 预期 `status` 变为 `terminated`；Broker 上为该会话发放的短期凭据同时失效。

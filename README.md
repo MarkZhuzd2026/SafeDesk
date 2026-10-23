@@ -25,10 +25,10 @@ SafeDesk 是桌面级企业安全沙箱。它让主流 Agent 在隔离环境中�
 
 ### 快速开始
 
-开发环境公网入口：
+开发环境公网入口（HTTPS，自签证书）：
 
-- http://218.11.5.249:10648/
-- http://111.62.156.213:10645/
+- https://218.11.5.249:10648/
+- https://111.62.156.213:10645/
 
 本地启动控制面：
 
@@ -44,14 +44,17 @@ cd apps/safedesk-control-plane
 PORT=8022 HOST=0.0.0.0 node server.mjs
 ```
 
+登录方式：手机号验证码、微信扫码、管理员账户。默认管理员为 `admin` / `SafeDesk@Admin`。普通用户只能管理自己的沙箱，审批由管理员完成。
+
 ### 演示路径
 
-1. 选择 Claude Code、Codex 或 DSH。
-2. 选择策略：标准研发、只读审阅或受限构建。
-3. 填写项目绝对路径，勾选凭据能力和 MCP 服务，不要填写任何密钥。
-4. 创建待审批沙箱，查看编译后的启动清单。
-5. 审批启动后，安全事件会记录凭据代签与外联拦截。
-6. 终止沙箱，确认状态变为 `terminated`。
+1. 登录控制台。
+2. 选择 Claude Code、Codex 或 DSH。
+3. 选择策略：标准研发、只读审阅或受限构建。
+4. 填写项目绝对路径，勾选凭据能力和 MCP 服务，不要填写任何密钥。
+5. 创建待审批沙箱，查看编译后的启动清单。
+6. 管理员审批启动后，安全事件会记录凭据代签与外联拦截。
+7. 终止沙箱，确认状态变为 `terminated`。
 
 ### 文档
 
@@ -76,10 +79,10 @@ SafeDesk is a desktop-class enterprise sandbox for AI agents. Mainstream agents 
 
 ### Quick start
 
-Public demo endpoints:
+Public demo endpoints (HTTPS, self-signed certificate):
 
-- http://218.11.5.249:10648/
-- http://111.62.156.213:10645/
+- https://218.11.5.249:10648/
+- https://111.62.156.213:10645/
 
 Start the control plane locally:
 
@@ -95,14 +98,17 @@ cd apps/safedesk-control-plane
 PORT=8022 HOST=0.0.0.0 node server.mjs
 ```
 
+Sign-in methods: phone OTP, WeChat QR, and an admin account. Default admin is `admin` / `SafeDesk@Admin`. Regular users only manage their own sandboxes; admins approve launches.
+
 ### Demo path
 
-1. Choose Claude Code, Codex, or DSH.
-2. Choose a policy: Standard Development, Read-only Review, or Restricted Build.
-3. Enter an absolute project path and select credential/MCP capabilities. Do not paste secrets.
-4. Create a pending sandbox and inspect the compiled launch plan.
-5. Approve the sandbox. Security events record credential proxying and blocked egress.
-6. Terminate the sandbox and confirm the status becomes `terminated`.
+1. Sign in to the console.
+2. Choose Claude Code, Codex, or DSH.
+3. Choose a policy: Standard Development, Read-only Review, or Restricted Build.
+4. Enter an absolute project path and select credential/MCP capabilities. Do not paste secrets.
+5. Create a pending sandbox and inspect the compiled launch plan.
+6. An admin approves the sandbox. Security events record credential proxying and blocked egress.
+7. Terminate the sandbox and confirm the status becomes `terminated`.
 
 ### Docs
 

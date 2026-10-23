@@ -9,6 +9,7 @@
 ```bash
 curl -s -X POST $BASE/api/sandboxes \
   -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"name":"dep-audit","agent":"codex","policyId":"review","workspace":"/srv/audit/webapp"}'
 ```
 
@@ -52,7 +53,7 @@ SBX=<SBX>
 审批人先看清单再决定：
 
 ```bash
-curl -s $BASE/api/sandboxes/$SBX/manifest
+curl -s -H "Authorization: Bearer $TOKEN" $BASE/api/sandboxes/$SBX/manifest
 ```
 
 预期与创建时返回的 `manifest` 一致，可逐字段核对：`credentialBroker.exposedValues` 恒为 `false`（密钥值从不暴露给沙箱）。
@@ -60,7 +61,7 @@ curl -s $BASE/api/sandboxes/$SBX/manifest
 ## 4. 人工审批并启动
 
 ```bash
-curl -s -X POST $BASE/api/sandboxes/$SBX/approve
+curl -s -X POST -H "Authorization: Bearer $TOKEN" $BASE/api/sandboxes/$SBX/approve
 ```
 
 预期输出（节选）：
@@ -78,7 +79,7 @@ curl -s -X POST $BASE/api/sandboxes/$SBX/approve
 ## 5. 查看安全事件流
 
 ```bash
-curl -s $BASE/api/events
+curl -s -H "Authorization: Bearer $TOKEN" $BASE/api/events
 ```
 
 预期最新两条事件（节选）：
@@ -95,7 +96,7 @@ curl -s $BASE/api/events
 ## 6. 审计结束，终止沙箱
 
 ```bash
-curl -s -X POST $BASE/api/sandboxes/$SBX/terminate
+curl -s -X POST -H "Authorization: Bearer $TOKEN" $BASE/api/sandboxes/$SBX/terminate
 ```
 
 预期输出（节选）：

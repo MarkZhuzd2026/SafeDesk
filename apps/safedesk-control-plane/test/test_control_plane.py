@@ -97,7 +97,7 @@ class ControlPlaneApiTest(unittest.TestCase):
         cls.data_file = cls.data_dir / "sandboxes.json"
         cls.port = free_port()
         cls.base = f"http://127.0.0.1:{cls.port}"
-        env = {**os.environ, "PORT": str(cls.port), "SAFEDESK_DATA_FILE": str(cls.data_file)}
+        env = {**os.environ, "PORT": str(cls.port), "SAFEDESK_DATA_DIR": str(cls.data_dir), "SAFEDESK_DATA_FILE": str(cls.data_file), "SAFEDESK_AUTH": "0"}
         cls.server = subprocess.Popen(
             [sys.executable, "server.py"],
             cwd=ROOT,

@@ -60,7 +60,7 @@ test.before(async () => {
   dataFile = join(dataDir, 'sandboxes.json');
   child = spawn(process.execPath, ['server.mjs'], {
     cwd: new URL('..', import.meta.url),
-    env: { ...process.env, PORT: String(port), SAFEDESK_DATA_FILE: dataFile },
+    env: { ...process.env, PORT: String(port), SAFEDESK_DATA_DIR: dataDir, SAFEDESK_DATA_FILE: dataFile, SAFEDESK_AUTH: '0' },
     stdio: 'ignore',
   });
   await waitForServer();

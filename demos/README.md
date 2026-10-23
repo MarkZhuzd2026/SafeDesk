@@ -38,21 +38,31 @@ PORT=18022 HOST=0.0.0.0 python3 server.py
 # 本机
 BASE=http://127.0.0.1:18022
 
-# 开发机公网入口（任选其一）
-BASE=http://218.11.5.249:10648
-BASE=http://111.62.156.213:10645
+# 开发机公网入口（任选其一，HTTPS 自签证书）
+BASE=https://218.11.5.249:10648
+BASE=https://111.62.156.213:10645
 ```
 
-3. 确认服务存活：
+3. 登录管理员并导出 token（后续命令都带这个头）：
 
 ```bash
-curl -s $BASE/api/bootstrap | head -c 200
+curl -s -X POST $BASE/api/auth/admin/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"SafeDesk@Admin"}'
+TOKEN=<返回的 token>
 ```
 
-预期返回以 `{"policies":` 开头的 JSON，包含 `balanced` / `review` / `build` 三个策略。
+4. 确认服务存活：
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" $BASE/api/bootstrap | head -c 200
+```
+
+预期返回以 `{"user":` 开头的 JSON，包含 `balanced` / `review` / `build` 三个策略。未登录访问应返回 HTTP 401。
 
 ## 说明
 
 - 每个 demo 的第一步都是创建沙箱，返回的 `sandbox.id` 形如 `sbx-xxxxxxxx`，后续命令把该值代入 `<SBX>`。
-- 所有写操作都会在内置安全事件流里留下记录，可用 `curl -s $BASE/api/events` 随时查看。
+- 所有写操作都会在内置安全事件流里留下记录，可用 `curl -s -H "Authorization: Bearer $TOKEN" $BASE/api/events` 随时查看。
 - 演示只调用 HTTP API，不会在本机真正拉起隔离沙箱；审批 = 授权执行器按清单启动。
+- 普通用户（手机号 / 微信）只能看到自己的沙箱，不能审批；管理员才能审批和查看安全事件。

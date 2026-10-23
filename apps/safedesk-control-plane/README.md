@@ -27,12 +27,23 @@ cd /opt/safedesk/apps/safedesk-control-plane
 PORT=8022 HOST=0.0.0.0 python3 server.py
 ```
 
-开发机公网入口 / public endpoints：
+开发机公网入口 / public endpoints（HTTPS，自签证书）：
 
-- http://218.11.5.249:10648/
-- http://111.62.156.213:10645/
+- https://218.11.5.249:10648/
+- https://111.62.156.213:10645/
 
-两者都映射到内网 `8022`。
+两者都映射到内网 `8022`。控制面默认开启登录：手机号验证码、微信扫码（本地二维码工单）和管理员账户。普通用户只能看到自己的沙箱，审批与安全事件仅管理员可见。
+
+默认管理员 / default admin：`admin` / `SafeDesk@Admin`
+
+可用环境变量覆盖：`SAFEDESK_ADMIN_USERNAME`、`SAFEDESK_ADMIN_PASSWORD`、`SAFEDESK_ADMIN_PHONES`。
+
+若公网入口已配置 TLS 证书，设置：
+
+```bash
+SAFEDESK_TLS_CERT=/etc/safedesk/tls/cert.pem
+SAFEDESK_TLS_KEY=/etc/safedesk/tls/key.pem
+```
 
 ## 验证 / Tests
 

@@ -52,3 +52,7 @@ SafeDesk 在隔离底座上增加企业层：
 2. 禁止把主机环境变量整包转发给沙箱。
 3. 所有模型与 MCP 流量走主机代理，而不是把密钥注入 guest env。
 4. 启动前必须审批，终止后短期会话凭据立即失效。
+5. 控制面必须登录：手机号验证码、微信扫码、管理员账户。
+6. 普通用户只能看到自己的沙箱；审批与安全事件仅管理员可见。
+
+The control plane requires sign-in. Phone OTP, WeChat QR, and an admin account are supported. Regular users only see their own sandboxes; approval and audit events stay with admins.

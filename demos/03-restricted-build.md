@@ -9,6 +9,7 @@
 ```bash
 curl -s -X POST $BASE/api/sandboxes \
   -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"name":"nightly-build","agent":"dsh","policyId":"build","workspace":"/srv/build/cache"}'
 ```
 
@@ -51,7 +52,7 @@ SBX=<SBX>
 ## 3. 审批并启动
 
 ```bash
-curl -s -X POST $BASE/api/sandboxes/$SBX/approve
+curl -s -X POST -H "Authorization: Bearer $TOKEN" $BASE/api/sandboxes/$SBX/approve
 ```
 
 预期 `status` 变为 `running`。
@@ -59,8 +60,8 @@ curl -s -X POST $BASE/api/sandboxes/$SBX/approve
 ## 4. 核对清单与事件
 
 ```bash
-curl -s $BASE/api/sandboxes/$SBX/manifest
-curl -s $BASE/api/events
+curl -s -H "Authorization: Bearer $TOKEN" $BASE/api/sandboxes/$SBX/manifest
+curl -s -H "Authorization: Bearer $TOKEN" $BASE/api/events
 ```
 
 预期事件中包含：
@@ -72,7 +73,7 @@ curl -s $BASE/api/events
 ## 5. 构建完成后销毁
 
 ```bash
-curl -s -X POST $BASE/api/sandboxes/$SBX/terminate
+curl -s -X POST -H "Authorization: Bearer $TOKEN" $BASE/api/sandboxes/$SBX/terminate
 ```
 
 预期 `status` 变为 `terminated`，临时工作区与会话凭据一并失效。

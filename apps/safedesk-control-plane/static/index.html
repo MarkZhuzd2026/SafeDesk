@@ -7,7 +7,7 @@
   <style>
     :root { --bg:#f4f6fb; --panel:#fff; --line:#d9e0ee; --ink:#152238; --muted:#5d6b82; --brand:#165dff; --ok:#0f9d58; --warn:#c47b00; --danger:#c62828; --shadow:0 18px 50px rgba(21,34,56,.08); }
     * { box-sizing:border-box; } body { margin:0; font-family:"PingFang SC","Noto Sans SC",sans-serif; background:radial-gradient(1200px 600px at 10% -10%,#e8f0ff,transparent),var(--bg); color:var(--ink); }
-    header { display:flex; justify-content:space-between; align-items:center; padding:22px 32px; }
+    header { display:flex; justify-content:space-between; align-items:center; padding:22px 32px; gap:16px; }
     .brand { display:flex; gap:12px; align-items:center; } .logo { width:42px; height:42px; border-radius:12px; background:linear-gradient(135deg,#165dff,#6aa1ff); color:#fff; display:grid; place-items:center; font-weight:800; }
     .badge { font-size:12px; padding:4px 8px; border-radius:999px; background:#e8f0ff; color:#165dff; }
     main { display:grid; grid-template-columns:360px 1fr 320px; gap:18px; padding:0 32px 32px; }
@@ -17,20 +17,76 @@
     .chips { display:flex; flex-wrap:wrap; gap:8px; } .chip { border:1px solid var(--line); padding:8px 10px; border-radius:999px; cursor:pointer; font-size:12px; }
     .chip.on { background:#e8f0ff; border-color:#165dff; color:#165dff; }
     button { border:0; background:var(--brand); color:#fff; padding:11px 16px; border-radius:12px; font-weight:700; cursor:pointer; }
-    button.ghost { background:#eef3fb; color:var(--ink); } button.danger { background:var(--danger); }
+    button.ghost { background:#eef3fb; color:var(--ink); } button.danger { background:var(--danger); } button:disabled { opacity:.55; cursor:not-allowed; }
     .card { border:1px solid var(--line); border-radius:16px; padding:12px; margin-bottom:10px; }
     .status { font-size:12px; font-weight:700; } .running { color:var(--ok); } .pending_approval { color:var(--warn); } .terminated { color:var(--danger); }
     pre { background:#0f1728; color:#dbe7ff; padding:12px; border-radius:12px; overflow:auto; font-size:12px; }
     .event { font-size:13px; padding:8px 0; border-bottom:1px dashed var(--line); } .event b { display:block; }
-    @media (max-width:1180px) { main { grid-template-columns:1fr; } }
+    .hidden { display:none !important; }
+    .userbox { display:flex; align-items:center; gap:10px; }
+    .gate { min-height:calc(100vh - 86px); display:grid; place-items:center; padding:0 32px 48px; }
+    .login { width:min(460px,100%); background:var(--panel); border:1px solid var(--line); border-radius:24px; padding:28px; box-shadow:var(--shadow); }
+    .tabs { display:flex; gap:8px; margin:18px 0; }
+    .tabs button { flex:1; }
+    .tabs button.ghost.on { background:#e8f0ff; color:var(--brand); }
+    .qr { margin:16px 0; padding:18px; border:1px dashed var(--line); border-radius:16px; text-align:center; background:#f8fbff; }
+    .field-error { color:var(--danger); font-size:12px; min-height:16px; margin:4px 0 0; }
+    .hint { margin-top:10px; }
+    @media (max-width:1180px) { main { grid-template-columns:1fr; } header { flex-direction:column; align-items:flex-start; } }
   </style>
 </head>
 <body>
   <header>
-    <div class="brand"><div class="logo">SD</div><div><strong>SafeDesk</strong><div class="badge">Wasmer 二次开发 · 企业级 Agent 沙箱</div></div></div>
-    <small>密钥永不进入沙箱 · 策略先于执行 · 主机凭据代理</small>
+    <div class="brand"><div class="logo">SD</div><div><strong>SafeDesk</strong><div class="badge">企业级 Agent 安全沙箱</div></div></div>
+    <div class="userbox">
+      <small id="sessionHint">密钥永不进入沙箱 · 策略先于执行 · 主机凭据代理</small>
+      <button class="ghost hidden" id="logout">退出</button>
+    </div>
   </header>
-  <main>
+  <div id="loginView" class="gate">
+    <section class="login">
+      <h2>登录 SafeDesk</h2>
+      <p>手机号验证码、微信扫码或管理员账户均可进入。普通用户只能管理自己的沙箱，审批由管理员完成。</p>
+      <div class="tabs">
+        <button class="ghost on" data-tab="phone">手机号</button>
+        <button class="ghost" data-tab="wechat">微信</button>
+        <button class="ghost" data-tab="admin">管理员</button>
+      </div>
+      <p id="loginError" class="field-error"></p>
+      <form id="phoneForm">
+        <label>手机号</label>
+        <input id="phone" inputmode="numeric" maxlength="11" placeholder="11 位手机号" autocomplete="tel" />
+        <p id="phoneError" class="field-error"></p>
+        <label>短信验证码</label>
+        <input id="otp" inputmode="numeric" maxlength="6" placeholder="6 位验证码" />
+        <div style="display:flex;gap:8px;margin-top:16px">
+          <button type="button" class="ghost" id="sendOtp">获取验证码</button>
+          <button type="submit">登录 / 注册</button>
+        </div>
+        <small class="hint" id="otpHint"></small>
+      </form>
+      <div id="wechatForm" class="hidden">
+        <div class="qr">
+          <strong>微信扫码登录</strong>
+          <p id="wechatHint">点击下方生成二维码。同一浏览器可点确认完成登录。</p>
+          <pre id="wechatTicket">尚未生成</pre>
+          <div style="display:flex;gap:8px;justify-content:center">
+            <button type="button" id="startWechat">生成二维码</button>
+            <button type="button" class="ghost" id="confirmWechat">确认登录</button>
+          </div>
+        </div>
+      </div>
+      <form id="adminForm" class="hidden">
+        <label>管理员账号</label>
+        <input id="adminUser" autocomplete="username" />
+        <label>管理员密码</label>
+        <input id="adminPass" type="password" autocomplete="current-password" />
+        <div style="margin-top:16px"><button type="submit">管理员登录</button></div>
+        <small class="hint">默认账号 admin / SafeDesk@Admin，上线后请用环境变量覆盖。</small>
+      </form>
+    </section>
+  </div>
+  <main id="appView" class="hidden">
     <section>
       <h2>一键启动沙箱</h2>
       <p>安全优先，配置只问三件事：谁来跑、能碰哪、要哪些能力。</p>
@@ -55,14 +111,31 @@
     </section>
     <section>
       <h2>安全事件</h2>
+      <p id="eventsHint" class="hidden">安全事件仅管理员可见。</p>
       <div id="events"></div>
     </section>
   </main>
   <script>
+    const TOKEN_KEY = 'safedesk.token';
     const creds = ['github-read','gitlab-read','openai-proxy','anthropic-proxy','internal-mcp'];
     const mcps = ['github','gitlab','jira','confluence','browser','docs'];
     const selected = { credentials: new Set(['github-read']), mcpServers: new Set(['github']) };
     const $ = (id) => document.getElementById(id);
+    let currentUser = null;
+    let pendingOtp = null;
+    let wechatTicket = '';
+    let wechatTimer = null;
+    let otpTimer = null;
+
+    function token() { return localStorage.getItem(TOKEN_KEY) || ''; }
+    function setToken(value) { value ? localStorage.setItem(TOKEN_KEY, value) : localStorage.removeItem(TOKEN_KEY); }
+    function showLoginError(message) { $('loginError').textContent = message || ''; }
+    function setPhoneError(message) { $('phoneError').textContent = message || ''; }
+    function showApp(show) {
+      $('loginView').classList.toggle('hidden', show);
+      $('appView').classList.toggle('hidden', !show);
+      $('logout').classList.toggle('hidden', !show);
+    }
     function chips(el, items, key) {
       el.innerHTML = items.map((item) => `<span class="chip ${selected[key].has(item) ? 'on' : ''}" data-key="${key}" data-id="${item}">${item}</span>`).join('');
     }
@@ -73,19 +146,139 @@
       set.has(chip.dataset.id) ? set.delete(chip.dataset.id) : set.add(chip.dataset.id);
       chip.classList.toggle('on');
     });
-    async function api(path, options) { const res = await fetch(path, { headers:{'Content-Type':'application/json'}, ...options }); const data = await res.json(); if (!res.ok) throw new Error(data.error || '请求失败'); return data; }
-    function renderEvents(events) { $('events').innerHTML = events.map((e) => `<div class="event"><b>${e.action}</b><small>${e.detail}<br>${e.at}</small></div>`).join(''); }
+    async function api(path, options = {}) {
+      const headers = { ...(options.headers || {}) };
+      if (options.body && !(options.body instanceof FormData)) headers['Content-Type'] = 'application/json';
+      if (token()) headers.Authorization = `Bearer ${token()}`;
+      const res = await fetch(path, { ...options, headers });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 401) {
+          setToken('');
+          currentUser = null;
+          showApp(false);
+        }
+        throw new Error(data.error || '请求失败');
+      }
+      return data;
+    }
+    function renderEvents(events) {
+      $('events').innerHTML = (events || []).map((e) => `<div class="event"><b>${e.action}</b><small>${e.detail}<br>${e.at}</small></div>`).join('');
+    }
     function renderList(sandboxes) {
-      $('list').innerHTML = sandboxes.map((s) => `<div class="card"><strong>${s.name}</strong> · ${s.agent}<div class="status ${s.status}">${s.status}</div><small>${s.workspace}</small><div style="margin-top:8px;display:flex;gap:8px"><button class="ghost" data-view="${s.id}">查看清单</button>${s.status==='pending_approval'?'<button data-approve="'+s.id+'">审批启动</button>':''}${s.status!=='terminated'?'<button class="danger" data-stop="'+s.id+'">终止</button>':''}</div></div>`).join('') || '<p>还没有沙箱</p>';
+      const admin = currentUser?.role === 'admin';
+      $('list').innerHTML = sandboxes.map((s) => `<div class="card"><strong>${s.name}</strong> · ${s.agent}${s.ownerName ? ' · ' + s.ownerName : ''}<div class="status ${s.status}">${s.status}</div><small>${s.workspace}</small><div style="margin-top:8px;display:flex;gap:8px"><button class="ghost" data-view="${s.id}">查看清单</button>${admin && s.status==='pending_approval'?'<button data-approve="'+s.id+'">审批启动</button>':''}${s.status!=='terminated'?'<button class="danger" data-stop="'+s.id+'">终止</button>':''}</div></div>`).join('') || '<p>还没有沙箱</p>';
     }
     async function bootstrap() {
       const data = await api('/api/bootstrap');
+      currentUser = data.user;
+      $('sessionHint').textContent = `${currentUser.displayName} · ${currentUser.role === 'admin' ? '管理员' : '普通用户'}`;
+      $('eventsHint').classList.toggle('hidden', currentUser.role === 'admin');
       $('policy').innerHTML = data.policies.map((p) => `<option value="${p.id}">${p.label}</option>`).join('');
       const current = data.policies.find((p) => p.id === $('policy').value);
       $('policyHint').textContent = current.description;
       chips($('credChips'), creds, 'credentials'); chips($('mcpChips'), mcps, 'mcpServers');
       renderList(data.sandboxes); renderEvents(data.securityEvents);
+      showApp(true);
     }
+    function switchTab(tab) {
+      document.querySelectorAll('.tabs button').forEach((button) => button.classList.toggle('on', button.dataset.tab === tab));
+      $('phoneForm').classList.toggle('hidden', tab !== 'phone');
+      $('wechatForm').classList.toggle('hidden', tab !== 'wechat');
+      $('adminForm').classList.toggle('hidden', tab !== 'admin');
+      showLoginError('');
+    }
+    document.querySelectorAll('.tabs button').forEach((button) => button.addEventListener('click', () => switchTab(button.dataset.tab)));
+    $('phone').addEventListener('input', () => setPhoneError(''));
+    function startCountdown(seconds) {
+      clearInterval(otpTimer);
+      let left = seconds;
+      const button = $('sendOtp');
+      button.disabled = true;
+      button.textContent = `${left}s 后重发`;
+      otpTimer = setInterval(() => {
+        left -= 1;
+        if (left <= 0) {
+          clearInterval(otpTimer);
+          button.disabled = false;
+          button.textContent = '获取验证码';
+          return;
+        }
+        button.textContent = `${left}s 后重发`;
+      }, 1000);
+    }
+    $('sendOtp').onclick = async () => {
+      const phone = $('phone').value.trim();
+      if (!/^1\d{10}$/.test(phone)) { setPhoneError('请输入正确的 11 位手机号'); return; }
+      setPhoneError('');
+      showLoginError('');
+      $('sendOtp').disabled = true;
+      try {
+        const sent = await api('/api/auth/phone/send', { method:'POST', body: JSON.stringify({ phone }) });
+        pendingOtp = { phone, verificationId: sent.verificationId };
+        $('otpHint').textContent = sent.demoCode ? `演示验证码：${sent.demoCode}` : '验证码已发送';
+        startCountdown(60);
+      } catch (error) {
+        $('sendOtp').disabled = false;
+        showLoginError(error.message);
+      }
+    };
+    $('phoneForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const phone = $('phone').value.trim();
+      const code = $('otp').value.trim();
+      if (!pendingOtp || pendingOtp.phone !== phone) { showLoginError('请先获取当前手机号的验证码'); return; }
+      try {
+        const session = await api('/api/auth/phone/verify', { method:'POST', body: JSON.stringify({ phone, token: code }) });
+        pendingOtp = null;
+        setToken(session.token);
+        await bootstrap();
+      } catch (error) { showLoginError(error.message); }
+    });
+    async function pollWechat() {
+      if (!wechatTicket) return;
+      try {
+        const result = await api(`/api/auth/wechat/poll?ticket=${encodeURIComponent(wechatTicket)}`);
+        if (result.status === 'confirmed') {
+          clearInterval(wechatTimer);
+          setToken(result.token);
+          await bootstrap();
+        } else if (result.status === 'expired') {
+          clearInterval(wechatTimer);
+          $('wechatHint').textContent = '二维码已过期，请重新生成';
+        }
+      } catch (error) { showLoginError(error.message); }
+    }
+    $('startWechat').onclick = async () => {
+      showLoginError('');
+      const started = await api('/api/auth/wechat/start', { method:'POST' });
+      wechatTicket = started.ticket;
+      $('wechatTicket').textContent = started.ticket;
+      $('wechatHint').textContent = started.confirmHint;
+      clearInterval(wechatTimer);
+      wechatTimer = setInterval(pollWechat, 1500);
+    };
+    $('confirmWechat').onclick = async () => {
+      if (!wechatTicket) { showLoginError('请先生成二维码'); return; }
+      try { await api('/api/auth/wechat/confirm', { method:'POST', body: JSON.stringify({ ticket: wechatTicket }) }); }
+      catch (error) { showLoginError(error.message); }
+    };
+    $('adminForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      showLoginError('');
+      try {
+        const session = await api('/api/auth/admin/login', { method:'POST', body: JSON.stringify({ username: $('adminUser').value.trim(), password: $('adminPass').value }) });
+        setToken(session.token);
+        await bootstrap();
+      } catch (error) { showLoginError(error.message); }
+    });
+    $('logout').onclick = async () => {
+      try { await api('/api/auth/logout', { method:'POST' }); } catch {}
+      setToken('');
+      currentUser = null;
+      showApp(false);
+      $('sessionHint').textContent = '密钥永不进入沙箱 · 策略先于执行 · 主机凭据代理';
+    };
     $('policy').addEventListener('change', async () => { const data = await api('/api/bootstrap'); $('policyHint').textContent = data.policies.find((p) => p.id === $('policy').value).description; });
     $('create').onclick = async () => {
       try {
@@ -103,7 +296,15 @@
         if (approve || stop) await bootstrap();
       } catch (error) { alert(error.message); }
     });
-    bootstrap().catch((error) => { $('list').innerHTML = `<p>${error.message}</p>`; });
+    async function restore() {
+      try {
+        const config = await api('/api/auth/config');
+        $('adminUser').value = config.adminUsername || 'admin';
+      } catch {}
+      if (!token()) { showApp(false); return; }
+      try { await bootstrap(); } catch { showApp(false); }
+    }
+    restore();
   </script>
 </body>
 </html>
