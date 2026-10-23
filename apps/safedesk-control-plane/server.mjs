@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
-import { join, normalize, extname } from 'node:path';
+import { join, normalize, extname, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { allowedAgents, compileManifest, policies } from './src/policy.mjs';
 
@@ -8,7 +8,7 @@ const PORT = Number(process.env.PORT ?? 8022);
 const HOST = process.env.HOST ?? '0.0.0.0';
 const root = new URL('.', import.meta.url).pathname;
 const staticRoot = join(root, 'static');
-const dataFile = join(root, 'data', 'sandboxes.json');
+const dataFile = process.env.SAFEDESK_DATA_FILE ?? join(root, 'data', 'sandboxes.json');
 
 const securityEvents = [
   { id: 'evt-001', level: 'info', action: '策略编译', detail: 'policy/balanced 已签名并下发至本地执行器', at: '2026-10-23T10:12:00.000Z' },
@@ -17,7 +17,7 @@ const securityEvents = [
 ];
 
 async function ensureStore() {
-  await mkdir(join(root, 'data'), { recursive: true });
+  await mkdir(dirname(dataFile), { recursive: true });
   try { await stat(dataFile); } catch { await writeFile(dataFile, '[]\n'); }
 }
 
@@ -38,7 +38,7 @@ function json(res, status, body) {
 async function readBody(req) {
   let body = '';
   for await (const chunk of req) body += chunk;
-  try { return JSON.parse(body || '{}'); } catch { throw new Error('请求体不是合法 JSON'); }
+  try { return JSON.parse(body || '{}'); } catch { throw Object.assign(new Error('请求体不是合法 JSON'), { statusCode: 400 }); }
 }
 
 function event(level, action, detail) {
@@ -58,7 +58,8 @@ async function api(req, res, pathname) {
   if (req.method === 'GET' && pathname === '/api/sandboxes') return json(res, 200, { sandboxes: await loadSandboxes() });
   if (req.method === 'GET' && pathname === '/api/events') return json(res, 200, { events: securityEvents });
   if (req.method === 'POST' && pathname === '/api/sandboxes') {
-    const input = await readBody(req);
+    let input;
+    try { input = await readBody(req); } catch (error) { return json(res, error.statusCode ?? 400, { error: error.message }); }
     const policyId = String(input.policyId ?? 'balanced');
     const agent = String(input.agent ?? 'claude-code');
     if (!policies[policyId]) return json(res, 400, { error: '未知策略' });
@@ -78,7 +79,7 @@ async function api(req, res, pathname) {
     sandboxes.unshift(sandbox);
     await saveSandboxes(sandboxes);
     event('info', '创建待审批沙箱', `${sandbox.name} 使用 ${policies[policyId].label} 策略`);
-    return json(res, 201, { sandbox, manifest: compileManifest(input, sandbox) });
+    return json(res, 201, { sandbox, manifest: compileManifest(sandbox) });
   }
   const match = pathname.match(/^\/api\/sandboxes\/(sbx-[\w-]+)\/(approve|terminate|manifest)$/);
   if (match) {
@@ -86,7 +87,7 @@ async function api(req, res, pathname) {
     const sandboxes = await loadSandboxes();
     const sandbox = sandboxes.find((item) => item.id === id);
     if (!sandbox) return json(res, 404, { error: '未找到沙箱' });
-    if (action === 'manifest' && req.method === 'GET') return json(res, 200, { manifest: compileManifest({}, sandbox) });
+    if (action === 'manifest' && req.method === 'GET') return json(res, 200, { manifest: compileManifest(sandbox) });
     if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
     if (action === 'approve') {
       if (sandbox.status !== 'pending_approval') return json(res, 409, { error: '沙箱不是待审批状态' });
