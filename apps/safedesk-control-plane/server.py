@@ -16,7 +16,7 @@ from policy import ALLOWED_AGENTS, POLICIES, compile_manifest
 
 ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = ROOT / "static"
-DATA_FILE = ROOT / "data" / "sandboxes.json"
+DATA_FILE = Path(os.environ["SAFEDESK_DATA_FILE"]) if os.getenv("SAFEDESK_DATA_FILE") else ROOT / "data" / "sandboxes.json"
 LOCK = threading.Lock()
 EVENTS = [
     {"id": "evt-001", "level": "info", "action": "策略编译", "detail": "policy/balanced 已签名并下发至本地执行器", "at": "2026-10-23T10:12:00.000Z"},
