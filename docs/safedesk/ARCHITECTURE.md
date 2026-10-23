@@ -41,7 +41,7 @@ See [RUNTIME.md](RUNTIME.md) for the isolation runtime notes.
 沙箱内可见：项目文件、Agent 二进制、MCP 网关地址、凭据占位符。  
 沙箱内不可见：真实 API Key、OS 钥匙串、主机环境变量、家目录密钥文件。
 
-Visible inside the sandbox: project files, agent binaries, MCP gateway URL, credential placeholders.  
+Visible inside the sandbox: project files, agent binaries, MCP gateway URL, credential placeholders.
 Never visible inside the sandbox: real API keys, OS keychain, host environment, home-directory secret files.
 
 ## 企业层能力 / Enterprise layer
