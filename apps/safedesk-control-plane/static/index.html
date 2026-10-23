@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SafeDesk · 企业级 Agent 安全沙箱</title>
+  <style>
+    :root { --bg:#f4f6fb; --panel:#fff; --line:#d9e0ee; --ink:#152238; --muted:#5d6b82; --brand:#165dff; --ok:#0f9d58; --warn:#c47b00; --danger:#c62828; --shadow:0 18px 50px rgba(21,34,56,.08); }
+    * { box-sizing:border-box; } body { margin:0; font-family:"PingFang SC","Noto Sans SC",sans-serif; background:radial-gradient(1200px 600px at 10% -10%,#e8f0ff,transparent),var(--bg); color:var(--ink); }
+    header { display:flex; justify-content:space-between; align-items:center; padding:22px 32px; }
+    .brand { display:flex; gap:12px; align-items:center; } .logo { width:42px; height:42px; border-radius:12px; background:linear-gradient(135deg,#165dff,#6aa1ff); color:#fff; display:grid; place-items:center; font-weight:800; }
+    .badge { font-size:12px; padding:4px 8px; border-radius:999px; background:#e8f0ff; color:#165dff; }
+    main { display:grid; grid-template-columns:360px 1fr 320px; gap:18px; padding:0 32px 32px; }
+    section { background:var(--panel); border:1px solid var(--line); border-radius:20px; padding:18px; box-shadow:var(--shadow); }
+    h2 { margin:0 0 12px; font-size:16px; } p,label,li,small { color:var(--muted); }
+    label { display:block; margin:10px 0 6px; font-size:13px; } input,select { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:12px; font:inherit; }
+    .chips { display:flex; flex-wrap:wrap; gap:8px; } .chip { border:1px solid var(--line); padding:8px 10px; border-radius:999px; cursor:pointer; font-size:12px; }
+    .chip.on { background:#e8f0ff; border-color:#165dff; color:#165dff; }
+    button { border:0; background:var(--brand); color:#fff; padding:11px 16px; border-radius:12px; font-weight:700; cursor:pointer; }
+    button.ghost { background:#eef3fb; color:var(--ink); } button.danger { background:var(--danger); }
+    .card { border:1px solid var(--line); border-radius:16px; padding:12px; margin-bottom:10px; }
+    .status { font-size:12px; font-weight:700; } .running { color:var(--ok); } .pending_approval { color:var(--warn); } .terminated { color:var(--danger); }
+    pre { background:#0f1728; color:#dbe7ff; padding:12px; border-radius:12px; overflow:auto; font-size:12px; }
+    .event { font-size:13px; padding:8px 0; border-bottom:1px dashed var(--line); } .event b { display:block; }
+    @media (max-width:1180px) { main { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand"><div class="logo">SD</div><div><strong>SafeDesk</strong><div class="badge">Wasmer 二次开发 · 企业级 Agent 沙箱</div></div></div>
+    <small>密钥永不进入沙箱 · 策略先于执行 · 主机凭据代理</small>
+  </header>
+  <main>
+    <section>
+      <h2>一键启动沙箱</h2>
+      <p>安全优先，配置只问三件事：谁来跑、能碰哪、要哪些能力。</p>
+      <label>沙箱名称</label><input id="name" placeholder="例如：前端重构任务" />
+      <label>Agent</label>
+      <select id="agent"><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="dsh">DSH</option></select>
+      <label>安全策略</label>
+      <select id="policy"></select>
+      <p id="policyHint"></p>
+      <label>项目目录（绝对路径）</label><input id="workspace" placeholder="/Users/you/project" />
+      <label>凭据能力（不填密钥）</label>
+      <div class="chips" id="credChips"></div>
+      <label>MCP 服务（无 API Key / Password）</label>
+      <div class="chips" id="mcpChips"></div>
+      <div style="display:flex;gap:8px;margin-top:16px"><button id="create">创建待审批沙箱</button><button class="ghost" id="reload">刷新</button></div>
+    </section>
+    <section>
+      <h2>运行中的隔离空间</h2>
+      <div id="list"></div>
+      <h2>编译后的启动清单</h2>
+      <pre id="manifest">选择一个沙箱查看策略编译结果</pre>
+    </section>
+    <section>
+      <h2>安全事件</h2>
+      <div id="events"></div>
+    </section>
+  </main>
+  <script>
+    const creds = ['github-read','gitlab-read','openai-proxy','anthropic-proxy','internal-mcp'];
+    const mcps = ['github','gitlab','jira','confluence','browser','docs'];
+    const selected = { credentials: new Set(['github-read']), mcpServers: new Set(['github']) };
+    const $ = (id) => document.getElementById(id);
+    function chips(el, items, key) {
+      el.innerHTML = items.map((item) => `<span class="chip ${selected[key].has(item) ? 'on' : ''}" data-key="${key}" data-id="${item}">${item}</span>`).join('');
+    }
+    document.body.addEventListener('click', (e) => {
+      const chip = e.target.closest('.chip');
+      if (!chip) return;
+      const set = selected[chip.dataset.key];
+      set.has(chip.dataset.id) ? set.delete(chip.dataset.id) : set.add(chip.dataset.id);
+      chip.classList.toggle('on');
+    });
+    async function api(path, options) { const res = await fetch(path, { headers:{'Content-Type':'application/json'}, ...options }); const data = await res.json(); if (!res.ok) throw new Error(data.error || '请求失败'); return data; }
+    function renderEvents(events) { $('events').innerHTML = events.map((e) => `<div class="event"><b>${e.action}</b><small>${e.detail}<br>${e.at}</small></div>`).join(''); }
+    function renderList(sandboxes) {
+      $('list').innerHTML = sandboxes.map((s) => `<div class="card"><strong>${s.name}</strong> · ${s.agent}<div class="status ${s.status}">${s.status}</div><small>${s.workspace}</small><div style="margin-top:8px;display:flex;gap:8px"><button class="ghost" data-view="${s.id}">查看清单</button>${s.status==='pending_approval'?'<button data-approve="'+s.id+'">审批启动</button>':''}${s.status!=='terminated'?'<button class="danger" data-stop="'+s.id+'">终止</button>':''}</div></div>`).join('') || '<p>还没有沙箱</p>';
+    }
+    async function bootstrap() {
+      const data = await api('/api/bootstrap');
+      $('policy').innerHTML = data.policies.map((p) => `<option value="${p.id}">${p.label}</option>`).join('');
+      const current = data.policies.find((p) => p.id === $('policy').value);
+      $('policyHint').textContent = current.description;
+      chips($('credChips'), creds, 'credentials'); chips($('mcpChips'), mcps, 'mcpServers');
+      renderList(data.sandboxes); renderEvents(data.securityEvents);
+    }
+    $('policy').addEventListener('change', async () => { const data = await api('/api/bootstrap'); $('policyHint').textContent = data.policies.find((p) => p.id === $('policy').value).description; });
+    $('create').onclick = async () => {
+      try {
+        const created = await api('/api/sandboxes', { method:'POST', body: JSON.stringify({ name:$('name').value, agent:$('agent').value, policyId:$('policy').value, workspace:$('workspace').value, credentials:[...selected.credentials], mcpServers:[...selected.mcpServers] }) });
+        $('manifest').textContent = JSON.stringify(created.manifest, null, 2); await bootstrap();
+      } catch (error) { alert(error.message); }
+    };
+    $('reload').onclick = bootstrap;
+    document.body.addEventListener('click', async (e) => {
+      const approve = e.target.dataset.approve, stop = e.target.dataset.stop, view = e.target.dataset.view;
+      try {
+        if (approve) await api(`/api/sandboxes/${approve}/approve`, { method:'POST' });
+        if (stop) await api(`/api/sandboxes/${stop}/terminate`, { method:'POST' });
+        if (view) $('manifest').textContent = JSON.stringify((await api(`/api/sandboxes/${view}/manifest`)).manifest, null, 2);
+        if (approve || stop) await bootstrap();
+      } catch (error) { alert(error.message); }
+    });
+    bootstrap().catch((error) => { $('list').innerHTML = `<p>${error.message}</p>`; });
+  </script>
+</body>
+</html>

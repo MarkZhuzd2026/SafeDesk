@@ -1,0 +1,15 @@
+{
+  "name": "safedesk-control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SafeDesk enterprise control plane for policy-driven Wasmer agent sandboxes",
+  "type": "module",
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
