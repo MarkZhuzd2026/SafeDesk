@@ -208,6 +208,102 @@ test('records lifecycle operations in the security event log', async () => {
   assert.ok(body.events.length <= 40, 'event log is capped');
 });
 
+test('created sandbox is owned by the local-dev admin when auth is disabled', async () => {
+  const { data } = await createSandbox({ name: 'owned' });
+  assert.equal(data.sandbox.ownerId, 'local-dev');
+  assert.equal(data.sandbox.statusLabel, '待审批');
+  assert.equal(data.sandbox.risk, '低风险');
+});
+
+test('purpose and notes are truncated to the documented limits', async () => {
+  const { data } = await createSandbox({
+    name: 'limits',
+    purpose: 'p'.repeat(200),
+    notes: 'n'.repeat(300),
+  });
+  assert.equal(data.sandbox.purpose.length, 160);
+  assert.equal(data.sandbox.notes.length, 240);
+});
+
+test('pause and resume only work from the running state', async () => {
+  const { data } = await createSandbox({ name: 'pause-flow' });
+  const id = data.sandbox.id;
+  assert.equal((await postJson(`/api/sandboxes/${id}/pause`)).status, 409);
+  assert.equal((await postJson(`/api/sandboxes/${id}/resume`)).status, 409);
+  assert.equal((await postJson(`/api/sandboxes/${id}/approve`)).status, 200);
+  const paused = await postJson(`/api/sandboxes/${id}/pause`);
+  assert.equal((await paused.json()).sandbox.status, 'paused');
+  const resumed = await postJson(`/api/sandboxes/${id}/resume`);
+  assert.equal((await resumed.json()).sandbox.status, 'running');
+});
+
+test('reject records a reason and cannot be approved afterwards', async () => {
+  const { data } = await createSandbox({ name: 'reject-flow' });
+  const rejected = await postJson(`/api/sandboxes/${data.sandbox.id}/reject`, { reason: '超出范围' });
+  const body = await rejected.json();
+  assert.equal(rejected.status, 200);
+  assert.equal(body.sandbox.status, 'rejected');
+  assert.equal(body.sandbox.rejectReason, '超出范围');
+  assert.equal((await postJson(`/api/sandboxes/${data.sandbox.id}/approve`)).status, 409);
+});
+
+test('reject falls back to the default reason', async () => {
+  const { data } = await createSandbox({ name: 'reject-default' });
+  const rejected = await postJson(`/api/sandboxes/${data.sandbox.id}/reject`, {});
+  assert.equal((await rejected.json()).sandbox.rejectReason, '不符合安全策略');
+});
+
+test('GET /api/catalog and /api/templates are public when auth is disabled', async () => {
+  const catalog = await fetch(`${base}/api/catalog`).then((r) => r.json());
+  assert.equal(catalog.policies.length, 3);
+  const templates = await fetch(`${base}/api/templates`).then((r) => r.json());
+  assert.equal(templates.templates.length, 3);
+});
+
+test('GET /api/overview counts created sandboxes', async () => {
+  await createSandbox({ name: 'overview-box' });
+  const body = await fetch(`${base}/api/overview`).then((r) => r.json());
+  assert.ok(body.overview.total >= 1);
+  assert.equal(body.overview.role, 'admin');
+});
+
+test('GET /api/sandboxes supports status and keyword filters', async () => {
+  const { data } = await createSandbox({ name: 'filter-target', purpose: '专门给筛选用' });
+  const filtered = await fetch(`${base}/api/sandboxes?status=pending_approval&q=${encodeURIComponent('筛选')}`).then((r) => r.json());
+  assert.ok(filtered.sandboxes.some((item) => item.id === data.sandbox.id));
+  const none = await fetch(`${base}/api/sandboxes?status=terminated&q=筛选`).then((r) => r.json());
+  assert.equal(none.sandboxes.some((item) => item.id === data.sandbox.id), false);
+});
+
+test('GET /api/events can filter by level', async () => {
+  const body = await fetch(`${base}/api/events?level=block`).then((r) => r.json());
+  assert.ok(body.events.length >= 1);
+  assert.ok(body.events.every((item) => item.level === 'block'));
+});
+
+test('GET activity returns events mentioning the sandbox name', async () => {
+  const { data } = await createSandbox({ name: 'activity-box' });
+  const body = await fetch(`${base}/api/sandboxes/${data.sandbox.id}/activity`).then((r) => r.json());
+  assert.ok(body.events.some((item) => String(item.detail).includes('activity-box')));
+});
+
+test('POST /api/settings persists organization overrides', async () => {
+  const response = await postJson('/api/settings', { orgName: '测试组织', maxConcurrent: 3 });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.settings.orgName, '测试组织');
+  assert.equal(body.settings.maxConcurrent, 3);
+  const loaded = await fetch(`${base}/api/settings`).then((r) => r.json());
+  assert.equal(loaded.settings.orgName, '测试组织');
+});
+
+test('unknown API path returns 404 JSON', async () => {
+  const response = await fetch(`${base}/api/does-not-exist`);
+  assert.equal(response.status, 404);
+  const body = await response.json();
+  assert.match(body.error, /Not found/i);
+});
+
 test('serves the console page and does not leak files outside the static root', async () => {
   const index = await fetch(`${base}/`);
   assert.equal(index.status, 200);

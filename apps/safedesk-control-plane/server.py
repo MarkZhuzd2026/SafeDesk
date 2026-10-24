@@ -141,6 +141,11 @@ class ApiHandler(SimpleHTTPRequestHandler):
             with LOCK:
                 self.send_json(200, AUTH.poll_wechat(ticket))
             return
+        if urlsplit(self.path).path == "/api/auth/wecom/poll":
+            ticket = (parse_qs(urlsplit(self.path).query).get("ticket") or [""])[0]
+            with LOCK:
+                self.send_json(200, AUTH.poll_wecom(ticket))
+            return
         if self.path == "/api/auth/me":
             user = self.current_user()
             if not user:
@@ -260,6 +265,18 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 payload = self.body()
                 with LOCK:
                     self.send_json(200, AUTH.confirm_wechat(str(payload.get("ticket", "")).strip()))
+            except ValueError as error:
+                self.send_json(400, {"error": str(error)})
+            return
+        if self.path == "/api/auth/wecom/start":
+            with LOCK:
+                self.send_json(200, AUTH.start_wecom())
+            return
+        if self.path == "/api/auth/wecom/confirm":
+            try:
+                payload = self.body()
+                with LOCK:
+                    self.send_json(200, AUTH.confirm_wecom(str(payload.get("ticket", "")).strip()))
             except ValueError as error:
                 self.send_json(400, {"error": str(error)})
             return
