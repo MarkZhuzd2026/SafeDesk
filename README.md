@@ -58,6 +58,198 @@ PORT=8022 HOST=0.0.0.0 node server.mjs
 6. 管理员审批启动后，安全事件会记录凭据代签与外联拦截。
 7. 终止沙箱，确认状态变为 `terminated`。
 
+### 部署（Ubuntu 24.04 / 25.05）
+
+> 内嵌版，与 [Ubuntu 部署手册](docs/safedesk/DEPLOY-UBUNTU.md) 同步。两条路线任选其一：**A. Python 零依赖**（仅标准库，受限主机首选）；**B. Node.js 22**（Node 20 亦可）。标注 `VERSION-SPECIFIC` 处按系统版本二选一。默认安装根目录 `/opt/safedesk`，端口 `8022`。
+
+#### 1. 准备系统
+
+```bash
+sudo apt-get update
+sudo apt-get upgrade -y
+sudo apt-get install -y git curl openssl ufw
+sudo useradd --system --home /opt/safedesk --shell /usr/sbin/nologin safedesk || true
+```
+
+#### 2. 获取代码
+
+```bash
+sudo git clone --depth 1 --branch main https://github.com/wuyeliang/SafeDesk.git /opt/safedesk
+sudo chown -R safedesk:safedesk /opt/safedesk
+```
+
+已有部署升级：
+
+```bash
+cd /opt/safedesk
+sudo -u safedesk git fetch origin main
+sudo -u safedesk git merge --ff-only origin/main
+sudo systemctl restart safedesk
+```
+
+#### 3. 路线 A：Python 零依赖（推荐）
+
+Ubuntu 24.04 自带 Python 3.12、25.05 自带 Python 3.13，均满足（≥3.10）：
+
+```bash
+python3 --version
+sudo -u safedesk python3 /opt/safedesk/apps/safedesk-control-plane/server.py
+```
+
+看到监听行后 `Ctrl+C`。
+
+#### 4. 路线 B：Node.js 22
+
+VERSION-SPECIFIC（Ubuntu 24.04，apt 版本过旧，用 NodeSource 源）：
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y nodejs
+```
+
+VERSION-SPECIFIC（Ubuntu 25.05，apt 自带 Node ≥ 20）：
+
+```bash
+sudo apt-get install -y nodejs
+node --version
+```
+
+冒烟运行：
+
+```bash
+sudo -u safedesk node /opt/safedesk/apps/safedesk-control-plane/server.mjs
+```
+
+#### 5. 生成自签 TLS 证书
+
+```bash
+sudo mkdir -p /opt/safedesk/tls
+sudo openssl req -x509 -newkey rsa:3072 -nodes \
+  -keyout /opt/safedesk/tls/safedesk.key \
+  -out /opt/safedesk/tls/safedesk.crt \
+  -days 825 -subj "/CN=safedesk.local" \
+  -addext "subjectAltName=IP:0.0.0.0,DNS:safedesk.local"
+sudo chown safedesk:safedesk /opt/safedesk/tls/safedesk.key /opt/safedesk/tls/safedesk.crt
+sudo chmod 600 /opt/safedesk/tls/safedesk.key
+```
+
+#### 6. 安装 systemd 服务（二选一）
+
+路线 A（Python）：
+
+```bash
+sudo tee /etc/systemd/system/safedesk.service > /dev/null <<'EOF'
+[Unit]
+Description=SafeDesk Enterprise Control Plane
+After=network.target
+
+[Service]
+Type=simple
+User=safedesk
+Group=safedesk
+WorkingDirectory=/opt/safedesk/apps/safedesk-control-plane
+Environment=PORT=8022
+Environment=HOST=0.0.0.0
+Environment=SAFEDESK_TLS_CERT=/opt/safedesk/tls/safedesk.crt
+Environment=SAFEDESK_TLS_KEY=/opt/safedesk/tls/safedesk.key
+Environment=SAFEDESK_EGRESS_PROXY_PORT=8023
+ExecStart=/usr/bin/python3 /opt/safedesk/apps/safedesk-control-plane/server.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+路线 B（Node）：同上，仅 `ExecStart` 改为 `/usr/bin/node /opt/safedesk/apps/safedesk-control-plane/server.mjs`。
+
+启用并启动：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable safedesk
+sudo systemctl start safedesk
+sudo systemctl status safedesk --no-pager
+```
+
+#### 7. 防火墙与外联代理
+
+```bash
+sudo ufw allow 8022/tcp
+sudo ufw status
+```
+
+外联代理默认绑定 `127.0.0.1:8023`，仅本机沙箱使用，无需对外放行。
+
+#### 8. （可选）wasmer 真实执行器
+
+无 wasmer 时沙箱以 dry-run 占位进程跑完整生命周期；真实隔离执行需安装：
+
+```bash
+curl https://get.wasmer.io -sSfL > /tmp/install-wasmer.sh
+sudo sh /tmp/install-wasmer.sh
+sudo -u safedesk wasmer --version
+```
+
+VERSION-SPECIFIC（Ubuntu 24.04）：如另用 Claude Code `srt` 裸沙箱，需 `sudo apt-get install -y bubblewrap socat` 并按官方文档放行 AppArmor profile。
+
+#### 9. 验收清单（逐条 curl）
+
+```bash
+# 未登录必须 401
+curl -sk https://127.0.0.1:8022/api/bootstrap
+
+# 管理员登录（首登后请在组织设置改密）
+curl -sk -X POST https://127.0.0.1:8022/api/auth/admin/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"SafeDesk@Admin"}'
+
+# 登记凭据（无明文回显）
+TOKEN=上一步返回的token
+curl -sk -X POST https://127.0.0.1:8022/api/credentials \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"github-read","value":"ghp_替换为真实值","allowedHosts":["api.github.com"]}'
+
+# 创建沙箱并审批
+SID=$(curl -sk -X POST https://127.0.0.1:8022/api/sandboxes \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"agent":"codex","policyId":"balanced","workspace":"/opt/safedesk/demo","credentials":["github-read"]}' | python3 -c "import json,sys;print(json.load(sys.stdin)['sandbox']['id'])")
+curl -sk -X POST "https://127.0.0.1:8022/api/sandboxes/$SID/approve" -H "Authorization: Bearer $TOKEN"
+
+# 三重核对审计：内存事件 / 持久化分页 / 落盘文件
+curl -sk "https://127.0.0.1:8022/api/events?level=allow" -H "Authorization: Bearer $TOKEN"
+curl -sk "https://127.0.0.1:8022/api/events?history=1&limit=5" -H "Authorization: Bearer $TOKEN"
+sudo -u safedesk tail -n 3 /opt/safedesk/apps/safedesk-control-plane/data/audit.jsonl
+```
+
+#### 10. 常用运维
+
+```bash
+# 日志
+sudo journalctl -u safedesk -f
+
+# 备份（审计、凭据、沙箱元数据全在 data 目录）
+sudo systemctl stop safedesk
+sudo tar -czf /var/backups/safedesk-data-$(date +%F).tar.gz -C /opt/safedesk/apps/safedesk-control-plane data
+sudo systemctl start safedesk
+
+# 恢复
+sudo tar -xzf /var/backups/safedesk-data-YYYY-MM-DD.tar.gz -C /opt/safedesk/apps/safedesk-control-plane
+sudo chown -R safedesk:safedesk /opt/safedesk/apps/safedesk-control-plane/data
+sudo systemctl restart safedesk
+```
+
+排障速查：
+
+- approve 502「外联代理启动失败」：`sudo ss -ltnp | grep 8023` 查端口占用。
+- 沙箱很快终止：看 `journalctl -u safedesk` 和 `data/runners/<沙箱id>.log`。
+- 忘记 admin 密码：删除 `data/users.json` 后重启重建默认 admin（沙箱与审计不受影响）。
+
 ### 关键能力对比矩阵
 
 SafeDesk 与市面主流企业级沙箱的能力对比（2026 年 10 月调研）：
@@ -82,6 +274,7 @@ SafeDesk 与市面主流企业级沙箱的能力对比（2026 年 10 月调研�
 - 架构设计：[docs/safedesk/ARCHITECTURE.md](docs/safedesk/ARCHITECTURE.md)
 - 市场调研：[docs/safedesk/MARKET-SANDBOX-SURVEY-2026-10.md](docs/safedesk/MARKET-SANDBOX-SURVEY-2026-10.md)
 - 需求清单（100 项）：[docs/safedesk/REQUIREMENTS-100.md](docs/safedesk/REQUIREMENTS-100.md)
+- Ubuntu 部署手册：[docs/safedesk/DEPLOY-UBUNTU.md](docs/safedesk/DEPLOY-UBUNTU.md)
 - 运行说明：[docs/safedesk/RUNBOOK.md](docs/safedesk/RUNBOOK.md)
 - 控制面：[apps/safedesk-control-plane/README.md](apps/safedesk-control-plane/README.md)
 - 底层运行时说明：[docs/safedesk/RUNTIME.md](docs/safedesk/RUNTIME.md)
@@ -133,6 +326,198 @@ Sign-in methods: phone OTP, WeChat QR, and an admin account. Default admin is `a
 6. An admin approves the sandbox. Security events record credential proxying and blocked egress.
 7. Terminate the sandbox and confirm the status becomes `terminated`.
 
+### Deployment (Ubuntu 24.04 / 25.05)
+
+> Inline edition, kept in sync with the standalone [Ubuntu deployment guide](docs/safedesk/DEPLOY-UBUNTU.md). Pick one of two routes: **A. Python zero-dependency** (stdlib only, best for restricted hosts) or **B. Node.js 22** (Node 20 also works). Lines marked `VERSION-SPECIFIC` differ per release. Defaults: root `/opt/safedesk`, port `8022`.
+
+#### 1. Prepare the system
+
+```bash
+sudo apt-get update
+sudo apt-get upgrade -y
+sudo apt-get install -y git curl openssl ufw
+sudo useradd --system --home /opt/safedesk --shell /usr/sbin/nologin safedesk || true
+```
+
+#### 2. Fetch the code
+
+```bash
+sudo git clone --depth 1 --branch main https://github.com/wuyeliang/SafeDesk.git /opt/safedesk
+sudo chown -R safedesk:safedesk /opt/safedesk
+```
+
+Upgrade an existing install:
+
+```bash
+cd /opt/safedesk
+sudo -u safedesk git fetch origin main
+sudo -u safedesk git merge --ff-only origin/main
+sudo systemctl restart safedesk
+```
+
+#### 3. Route A: Python zero-dependency (recommended)
+
+Ubuntu 24.04 ships Python 3.12 and 25.05 ships 3.13; both satisfy the >=3.10 requirement:
+
+```bash
+python3 --version
+sudo -u safedesk python3 /opt/safedesk/apps/safedesk-control-plane/server.py
+```
+
+Ctrl+C once it prints the listening line.
+
+#### 4. Route B: Node.js 22
+
+VERSION-SPECIFIC (Ubuntu 24.04 — apt is too old, use NodeSource):
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y nodejs
+```
+
+VERSION-SPECIFIC (Ubuntu 25.05 — apt ships Node >= 20):
+
+```bash
+sudo apt-get install -y nodejs
+node --version
+```
+
+Smoke run:
+
+```bash
+sudo -u safedesk node /opt/safedesk/apps/safedesk-control-plane/server.mjs
+```
+
+#### 5. Generate a self-signed TLS certificate
+
+```bash
+sudo mkdir -p /opt/safedesk/tls
+sudo openssl req -x509 -newkey rsa:3072 -nodes \
+  -keyout /opt/safedesk/tls/safedesk.key \
+  -out /opt/safedesk/tls/safedesk.crt \
+  -days 825 -subj "/CN=safedesk.local" \
+  -addext "subjectAltName=IP:0.0.0.0,DNS:safedesk.local"
+sudo chown safedesk:safedesk /opt/safedesk/tls/safedesk.key /opt/safedesk/tls/safedesk.crt
+sudo chmod 600 /opt/safedesk/tls/safedesk.key
+```
+
+#### 6. Install the systemd unit (pick one)
+
+Route A (Python):
+
+```bash
+sudo tee /etc/systemd/system/safedesk.service > /dev/null <<'EOF'
+[Unit]
+Description=SafeDesk Enterprise Control Plane
+After=network.target
+
+[Service]
+Type=simple
+User=safedesk
+Group=safedesk
+WorkingDirectory=/opt/safedesk/apps/safedesk-control-plane
+Environment=PORT=8022
+Environment=HOST=0.0.0.0
+Environment=SAFEDESK_TLS_CERT=/opt/safedesk/tls/safedesk.crt
+Environment=SAFEDESK_TLS_KEY=/opt/safedesk/tls/safedesk.key
+Environment=SAFEDESK_EGRESS_PROXY_PORT=8023
+ExecStart=/usr/bin/python3 /opt/safedesk/apps/safedesk-control-plane/server.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+Route B (Node): identical, except `ExecStart` becomes `/usr/bin/node /opt/safedesk/apps/safedesk-control-plane/server.mjs`.
+
+Enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable safedesk
+sudo systemctl start safedesk
+sudo systemctl status safedesk --no-pager
+```
+
+#### 7. Firewall and egress proxy
+
+```bash
+sudo ufw allow 8022/tcp
+sudo ufw status
+```
+
+The egress proxy binds `127.0.0.1:8023` by default and serves sandboxes locally only; no inbound rule needed.
+
+#### 8. (Optional) Real wasmer executor
+
+Without wasmer, sandboxes run the full lifecycle as dry-run placeholder processes. For real isolated execution:
+
+```bash
+curl https://get.wasmer.io -sSfL > /tmp/install-wasmer.sh
+sudo sh /tmp/install-wasmer.sh
+sudo -u safedesk wasmer --version
+```
+
+VERSION-SPECIFIC (Ubuntu 24.04): if you also use Claude Code's `srt` bare sandboxing, run `sudo apt-get install -y bubblewrap socat` and allow its AppArmor profile per the official docs.
+
+#### 9. Acceptance checklist (follow the curls)
+
+```bash
+# unauthenticated must be 401
+curl -sk https://127.0.0.1:8022/api/bootstrap
+
+# admin sign-in (change the password afterwards in Organization Settings)
+curl -sk -X POST https://127.0.0.1:8022/api/auth/admin/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"SafeDesk@Admin"}'
+
+# register a credential (masked echo only)
+TOKEN=token_from_previous_step
+curl -sk -X POST https://127.0.0.1:8022/api/credentials \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"github-read","value":"ghp_replace_with_real_value","allowedHosts":["api.github.com"]}'
+
+# create and approve a sandbox
+SID=$(curl -sk -X POST https://127.0.0.1:8022/api/sandboxes \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"agent":"codex","policyId":"balanced","workspace":"/opt/safedesk/demo","credentials":["github-read"]}' | python3 -c "import json,sys;print(json.load(sys.stdin)['sandbox']['id'])")
+curl -sk -X POST "https://127.0.0.1:8022/api/sandboxes/$SID/approve" -H "Authorization: Bearer $TOKEN"
+
+# triple-check the audit chain: in-memory events / persisted pagination / on-disk file
+curl -sk "https://127.0.0.1:8022/api/events?level=allow" -H "Authorization: Bearer $TOKEN"
+curl -sk "https://127.0.0.1:8022/api/events?history=1&limit=5" -H "Authorization: Bearer $TOKEN"
+sudo -u safedesk tail -n 3 /opt/safedesk/apps/safedesk-control-plane/data/audit.jsonl
+```
+
+#### 10. Day-2 operations
+
+```bash
+# logs
+sudo journalctl -u safedesk -f
+
+# backup (audit, credentials and sandbox metadata all live in data/)
+sudo systemctl stop safedesk
+sudo tar -czf /var/backups/safedesk-data-$(date +%F).tar.gz -C /opt/safedesk/apps/safedesk-control-plane data
+sudo systemctl start safedesk
+
+# restore
+sudo tar -xzf /var/backups/safedesk-data-YYYY-MM-DD.tar.gz -C /opt/safedesk/apps/safedesk-control-plane
+sudo chown -R safedesk:safedesk /opt/safedesk/apps/safedesk-control-plane/data
+sudo systemctl restart safedesk
+```
+
+Troubleshooting quick list:
+
+- approve fails with 502 "egress proxy start failed": check port conflicts via `sudo ss -ltnp | grep 8023`.
+- sandbox dies right after approval: inspect `journalctl -u safedesk` and `data/runners/<sandbox-id>.log`.
+- lost admin password: delete `data/users.json` and restart to recreate the default admin (sandboxes and audit are unaffected).
+
 ### Capability comparison matrix
 
 SafeDesk versus mainstream enterprise sandboxes (surveyed October 2026):
@@ -157,6 +542,7 @@ SafeDesk versus mainstream enterprise sandboxes (surveyed October 2026):
 - Architecture: [docs/safedesk/ARCHITECTURE.md](docs/safedesk/ARCHITECTURE.md)
 - Market survey: [docs/safedesk/MARKET-SANDBOX-SURVEY-2026-10.md](docs/safedesk/MARKET-SANDBOX-SURVEY-2026-10.md)
 - Requirements backlog (100): [docs/safedesk/REQUIREMENTS-100.md](docs/safedesk/REQUIREMENTS-100.md)
+- Ubuntu deployment guide: [docs/safedesk/DEPLOY-UBUNTU.md](docs/safedesk/DEPLOY-UBUNTU.md)
 - Runbook: [docs/safedesk/RUNBOOK.md](docs/safedesk/RUNBOOK.md)
 - Control plane: [apps/safedesk-control-plane/README.md](apps/safedesk-control-plane/README.md)
 - Underlying runtime notes: [docs/safedesk/RUNTIME.md](docs/safedesk/RUNTIME.md)
