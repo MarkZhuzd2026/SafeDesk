@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="apps/safedesk-control-plane/static/brand/logo-icon.png" alt="SafeDesk" width="96" />
+
 # SafeDesk
 
 **企业级 Agent 安全沙箱 / Enterprise Agent Security Sandbox**
