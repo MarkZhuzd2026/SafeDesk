@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import ssl
 import threading
 from datetime import datetime, timezone
@@ -13,9 +14,13 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
+from audit import AuditLog
 from auth import AuthStore
+from broker import CredentialBroker
+from launcher import Launcher, workspace_allowed
 from policy import ALLOWED_AGENTS, POLICIES, compile_manifest
 from product import DEFAULT_TEMPLATES, catalog, enrich_sandbox, filter_events, filter_sandboxes, merge_settings, overview as product_overview, risk_for
+from proxy import EgressPolicy, ProxyRuntime, serve as serve_proxy
 
 ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = ROOT / "static"
@@ -30,6 +35,12 @@ EVENTS = [
     {"id": "evt-002", "level": "allow", "action": "凭据代签", "detail": "github-read 通过 Host Credential Broker 注入 Authorization 头", "at": "2026-10-23T10:14:00.000Z"},
     {"id": "evt-003", "level": "block", "action": "外联拦截", "detail": "沙箱请求 untrusted.example 被默认拒绝", "at": "2026-10-23T10:17:00.000Z"},
 ]
+AUDIT_LOG = None  # initialized after load_settings()
+BROKER = CredentialBroker(DATA_DIR / "credentials.json")
+LAUNCHER = Launcher(DATA_DIR / "runners")
+PROXY_RT = ProxyRuntime()
+PROXY_SERVER = None
+PROXY_PORT = int(os.getenv("SAFEDESK_EGRESS_PROXY_PORT", "0"))
 
 
 def iso_now() -> str:
@@ -60,9 +71,38 @@ def save_settings(settings: dict) -> dict:
     return merged
 
 
+AUDIT_LOG = AuditLog(DATA_DIR / "audit.jsonl", int(load_settings().get("retainAuditDays") or 30))
+if not AUDIT_LOG.load():
+    for seed in EVENTS:
+        AUDIT_LOG.append(seed)
+AUDIT_LOG.prune()
+
+
 def security_event(level: str, action: str, detail: str, actor: str | None = None) -> None:
-    EVENTS.insert(0, {"id": str(uuid4()), "level": level, "action": action, "detail": detail, "actor": actor, "at": iso_now()})
+    event = {"id": str(uuid4()), "level": level, "action": action, "detail": detail, "actor": actor, "at": iso_now()}
+    EVENTS.insert(0, event)
     del EVENTS[40:]
+    AUDIT_LOG.append(event)
+
+
+PROXY_RT.on_event = lambda level, detail: security_event(level, "网络决策", detail, "egress-proxy")
+
+
+def policy_key(sandbox: dict) -> str:
+    key = str(sandbox.get("policyId") or "balanced")
+    return key if key in POLICIES else "balanced"
+
+
+def ensure_proxy() -> bool:
+    """Start the ingress-side egress proxy once (REQ-NW-015 联动 launcher)."""
+    global PROXY_SERVER
+    if PROXY_SERVER is None:
+        try:
+            PROXY_SERVER = serve_proxy(PROXY_RT, "127.0.0.1", PROXY_PORT)
+            LAUNCHER.proxy_url = f"http://127.0.0.1:{PROXY_SERVER.server_port}"
+        except OSError:
+            return False
+    return True
 
 
 def safe_name(value: object) -> str:
@@ -210,7 +250,23 @@ class ApiHandler(SimpleHTTPRequestHandler):
             user = self.require_admin()
             if user is None:
                 return
-            self.send_json(200, {"events": filter_events(EVENTS, query_map(self.path))})
+            query = query_map(self.path)
+            if str(query.get("history")) == "1":
+                try:
+                    limit = int(query.get("limit") or 100)
+                    offset = int(query.get("offset") or 0)
+                except ValueError:
+                    limit, offset = 100, 0
+                events = AUDIT_LOG.query(query.get("q", ""), query.get("level", ""), query.get("action", ""), query.get("since"), limit, offset)
+                self.send_json(200, {"events": events, "size": len(events)})
+            else:
+                self.send_json(200, {"events": filter_events(EVENTS, query)})
+            return
+        if urlsplit(self.path).path == "/api/credentials":
+            user = self.require_admin()
+            if user is None:
+                return
+            self.send_json(200, {"credentials": BROKER.list_masked()})
             return
         match = re.fullmatch(r"/api/sandboxes/(sbx-[\w-]+)(?:/(manifest|activity))?", urlsplit(self.path).path)
         if match and match.group(2) in (None, "manifest", "activity"):
@@ -312,6 +368,38 @@ class ApiHandler(SimpleHTTPRequestHandler):
             except ValueError as error:
                 self.send_json(400, {"error": str(error)})
             return
+        if self.path == "/api/credentials":
+            user = self.require_admin()
+            if user is None:
+                return
+            try:
+                payload = self.body()
+                name = str(payload.get("name", "")).strip()
+                value = str(payload.get("value", ""))
+                hosts = payload.get("allowedHosts") or []
+                if not isinstance(hosts, list):
+                    raise ValueError("allowedHosts 必须是数组")
+                entry = BROKER.put(name, value, hosts)
+                security_event("allow", "注册凭据", f"{name} 已登记，目的地白名单 {len(hosts)} 条", user["id"])
+                self.send_json(200, {"credential": entry})
+            except ValueError as error:
+                self.send_json(400, {"error": str(error)})
+            return
+        if self.path == "/api/credentials/delete":
+            user = self.require_admin()
+            if user is None:
+                return
+            try:
+                payload = self.body()
+                name = str(payload.get("name", "")).strip()
+                if not BROKER.remove(name):
+                    self.send_json(404, {"error": "未找到凭据"})
+                    return
+                security_event("info", "注销凭据", f"{name} 已删除", user["id"])
+                self.send_json(200, {"ok": True})
+            except ValueError as error:
+                self.send_json(400, {"error": str(error)})
+            return
         if self.path == "/api/sandboxes":
             user = self.require_user()
             if user is None:
@@ -327,6 +415,9 @@ class ApiHandler(SimpleHTTPRequestHandler):
                     self.send_json(400, {"error": "仅支持 Claude Code、Codex 或 DSH"}); return
                 if not workspace.startswith("/"):
                     self.send_json(400, {"error": "工作区必须为绝对路径"}); return
+                current_settings = load_settings()
+                if not workspace_allowed(workspace, list(current_settings.get("workspaceRoots") or [])):
+                    self.send_json(400, {"error": "工作区不在允许的根目录内"}); return
                 sandbox = {
                     "id": f"sbx-{uuid4().hex[:8]}", "name": safe_name(payload.get("name")) or f"agent-{agent}",
                     "agent": agent, "policyId": policy_id, "workspace": workspace,
@@ -339,6 +430,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
                     "status": "pending_approval", "createdAt": iso_now(),
                     "ownerId": user["id"], "ownerName": user.get("displayName") or user.get("username") or user["id"],
                 }
+                sandbox["credentialPlaceholders"] = BROKER.issue_placeholders(sandbox)
                 with LOCK:
                     settings = load_settings()
                     running = sum(item.get("status") in {"running", "paused", "pending_approval"} for item in load_sandboxes() if item.get("ownerId") == user["id"] or user.get("role") == "admin")
@@ -382,8 +474,32 @@ class ApiHandler(SimpleHTTPRequestHandler):
             if action == "approve":
                 if sandbox["status"] != "pending_approval":
                     self.send_json(409, {"error": "沙箱不是待审批状态"}); return
+                manifest = compile_manifest(sandbox)
+                try:
+                    if POLICIES[policy_key(sandbox)]["networkMode"] != "disabled":
+                        if not ensure_proxy():
+                            raise ValueError("外联代理启动失败")
+                        token = secrets.token_hex(12)
+                        sandbox["egressToken"] = token
+                        allowed, injections = set(), {}
+                        for capability in list(sandbox.get("credentials") or []):
+                            item = BROKER.get(capability)
+                            if item:
+                                allowed.update(item.get("allowedHosts", []))
+                                placeholder = (sandbox.get("credentialPlaceholders") or {}).get(capability)
+                                if placeholder:
+                                    injections[placeholder] = {"value": item["value"], "hosts": item["allowedHosts"]}
+                        PROXY_RT.register(sandbox_id, token, EgressPolicy(sorted(allowed), injections))
+                        manifest["egress"] = {"token": token}
+                    rng = LAUNCHER.info(sandbox_id)
+                    runtime_info = LAUNCHER.start(sandbox, manifest) if not rng.get("alive") else rng
+                except ValueError as error:
+                    PROXY_RT.unregister(sandbox_id)
+                    security_event("block", "启动失败", f"{sandbox['name']} 拉起失败：{error}", user["id"])
+                    self.send_json(502, {"error": str(error)}); return
                 sandbox["status"] = "running"; sandbox["startedAt"] = iso_now(); sandbox["approvedBy"] = user["id"]
-                security_event("allow", "人工审批", f"{sandbox['name']} 已启动；凭据仅由主机 Broker 按策略代签", user["id"])
+                sandbox["runtime"] = runtime_info
+                security_event("allow", "人工审批", f"{sandbox['name']} 已启动（{runtime_info.get('mode', 'wasmer')} 模式）；凭据仅由主机 Broker 按策略代签", user["id"])
             elif action == "reject":
                 if sandbox["status"] != "pending_approval":
                     self.send_json(409, {"error": "沙箱不是待审批状态"}); return
@@ -393,16 +509,22 @@ class ApiHandler(SimpleHTTPRequestHandler):
             elif action == "pause":
                 if sandbox["status"] != "running":
                     self.send_json(409, {"error": "仅运行中的沙箱可以暂停"}); return
+                LAUNCHER.pause(sandbox_id)
+                PROXY_RT.set_paused(sandbox_id, True)
                 sandbox["status"] = "paused"; sandbox["pausedAt"] = iso_now(); sandbox["pausedBy"] = user["id"]
                 security_event("info", "暂停沙箱", f"{sandbox['name']} 已暂停，外联和会话凭据冻结", user["id"])
             elif action == "resume":
                 if sandbox["status"] != "paused":
                     self.send_json(409, {"error": "仅暂停中的沙箱可以恢复"}); return
+                LAUNCHER.resume(sandbox_id)
+                PROXY_RT.set_paused(sandbox_id, False)
                 sandbox["status"] = "running"; sandbox["resumedAt"] = iso_now(); sandbox["resumedBy"] = user["id"]
                 security_event("allow", "恢复沙箱", f"{sandbox['name']} 已恢复运行", user["id"])
             else:
                 if sandbox["status"] == "terminated":
                     self.send_json(409, {"error": "沙箱已终止"}); return
+                LAUNCHER.stop(sandbox_id)
+                PROXY_RT.unregister(sandbox_id)
                 sandbox["status"] = "terminated"; sandbox["terminatedAt"] = iso_now(); sandbox["terminatedBy"] = user["id"]
                 security_event("block", "终止沙箱", f"{sandbox['name']} 已终止，短期会话凭据失效", user["id"])
             save_sandboxes(sandboxes)

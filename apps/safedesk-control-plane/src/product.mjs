@@ -18,6 +18,7 @@ export const defaultSettings = {
   allowWecomLogin: true,
   allowAdminLogin: true,
   retainAuditDays: 30,
+  workspaceRoots: [],
   notice: '密钥永不进入沙箱。所有外联必须经主机凭据代理。',
 };
 

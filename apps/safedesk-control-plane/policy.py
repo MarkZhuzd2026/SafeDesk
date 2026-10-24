@@ -23,6 +23,7 @@ def compile_manifest(sandbox: dict) -> dict:
         "agent": {"type": sandbox["agent"], "command": ALLOWED_AGENTS[sandbox["agent"]]["command"]},
         "filesystem": {"workspace": sandbox["workspace"], "mode": policy["workspaceMode"], "secretPaths": SECRET_PATHS},
         "credentialBroker": {"enabled": True, "exposedValues": False, "profiles": sandbox["credentials"]},
+        "environment": dict(sandbox.get("credentialPlaceholders") or {}),
         "mcpGateway": {"enabled": True, "transport": "streamable-http", "allowedServers": sandbox["mcpServers"]},
         "enforcement": {"approval": policy["approval"], "maxCpu": policy["maxCpu"], "maxMemoryMb": policy["maxMemoryMb"], "audit": "append-only"},
     }

@@ -55,6 +55,7 @@ export function compileManifest(sandbox) {
     agent: { type: sandbox.agent, command: agent.command },
     filesystem: { workspace: sandbox.workspace, mode: policy.workspaceMode, secretPaths },
     credentialBroker: { enabled: true, exposedValues: false, profiles: sandbox.credentials },
+    environment: { ...(sandbox.credentialPlaceholders || {}) },
     mcpGateway: { enabled: true, transport: 'streamable-http', allowedServers: sandbox.mcpServers },
     enforcement: { approval: policy.approval, maxCpu: policy.maxCpu, maxMemoryMb: policy.maxMemoryMb, audit: 'append-only' },
   };

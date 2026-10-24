@@ -1,9 +1,13 @@
 import { createServer } from 'node:http';
 import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
 import { join, normalize, extname, dirname } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { allowedAgents, compileManifest, policies } from './src/policy.mjs';
 import { AuthStore } from './src/auth.mjs';
+import { AuditLog } from './src/audit.mjs';
+import { CredentialBroker } from './src/broker.mjs';
+import { Launcher, workspaceAllowed } from './src/launch.mjs';
+import { EgressPolicy, ProxyRuntime, serve as serveProxy } from './src/proxy.mjs';
 import { defaultSettings, defaultTemplates, catalog, enrichSandbox, filterEvents, filterSandboxes, mergeSettings, overview as productOverview, riskFor } from './src/product.mjs';
 
 const PORT = Number(process.env.PORT ?? 8022);
@@ -15,6 +19,12 @@ const dataDir = process.env.SAFEDESK_DATA_DIR ?? join(root, 'data');
 const dataFile = process.env.SAFEDESK_DATA_FILE ?? join(dataDir, 'sandboxes.json');
 const settingsFile = join(dataDir, 'settings.json');
 const auth = new AuthStore(dataDir);
+const auditLog = new AuditLog(join(dataDir, 'audit.jsonl'));
+const broker = new CredentialBroker(join(dataDir, 'credentials.json'));
+const launcher = new Launcher(join(dataDir, 'runners'));
+const proxyRuntime = new ProxyRuntime();
+const PROXY_PORT = Number(process.env.SAFEDESK_EGRESS_PROXY_PORT ?? 0);
+let proxyServer = null;
 
 const securityEvents = [
   { id: 'evt-001', level: 'info', action: '策略编译', detail: 'policy/balanced 已签名并下发至本地执行器', at: '2026-10-23T10:12:00.000Z' },
@@ -65,8 +75,30 @@ async function readBody(req) {
 }
 
 function event(level, action, detail, actor) {
-  securityEvents.unshift({ id: randomUUID(), level, action, detail, actor, at: new Date().toISOString() });
+  const record = { id: randomUUID(), level, action, detail, actor, at: new Date().toISOString() };
+  securityEvents.unshift(record);
   securityEvents.splice(40);
+  auditLog.append(record).catch(() => {});
+}
+
+proxyRuntime.onEvent = (level, detail) => event(level, '网络决策', detail, 'egress-proxy');
+
+function ensureProxy() {
+  if (proxyServer) return Promise.resolve(true);
+  return new Promise((accept) => {
+    const candidate = serveProxy(proxyRuntime, '127.0.0.1', PROXY_PORT);
+    candidate.on('error', () => accept(false));
+    candidate.on('listening', () => {
+      proxyServer = candidate;
+      launcher.proxyUrl = `http://127.0.0.1:${candidate.address().port}`;
+      accept(true);
+    });
+  });
+}
+
+function policyKey(sandbox) {
+  const key = String(sandbox.policyId || 'balanced');
+  return policies[key] ? key : 'balanced';
 }
 
 function safeName(name) {
@@ -215,8 +247,50 @@ async function api(req, res, url) {
   if (req.method === 'GET' && pathname === '/api/sandboxes') {
     return json(res, 200, { sandboxes: filterSandboxes(visibleSandboxes(await loadSandboxes(), user), Object.fromEntries(url.searchParams)) });
   }
+  if (req.method === 'GET' && pathname === '/api/credentials') {
+    if (user.role !== 'admin') return json(res, 403, { error: '仅管理员可以执行此操作' });
+    return json(res, 200, { credentials: await broker.listMasked() });
+  }
+  if (req.method === 'POST' && pathname === '/api/credentials') {
+    if (user.role !== 'admin') return json(res, 403, { error: '仅管理员可以执行此操作' });
+    try {
+      const input = await readBody(req);
+      const hosts = Array.isArray(input.allowedHosts) ? input.allowedHosts : [];
+      if (!Array.isArray(input.allowedHosts)) throw Object.assign(new Error('allowedHosts 必须是数组'), { statusCode: 400 });
+      const entry = await broker.put(String(input.name || '').trim(), String(input.value || ''), hosts);
+      event('allow', '注册凭据', `${entry.name} 已登记，目的地白名单 ${hosts.length} 条`, user.id);
+      return json(res, 200, { credential: entry });
+    } catch (error) {
+      return json(res, error.statusCode ?? 400, { error: error.message });
+    }
+  }
+  if (req.method === 'POST' && pathname === '/api/credentials/delete') {
+    if (user.role !== 'admin') return json(res, 403, { error: '仅管理员可以执行此操作' });
+    try {
+      const input = await readBody(req);
+      const removed = await broker.remove(String(input.name || '').trim());
+      if (!removed) return json(res, 404, { error: '未找到凭据' });
+      event('info', '注销凭据', `${String(input.name || '').trim()} 已删除`, user.id);
+      return json(res, 200, { ok: true });
+    } catch (error) {
+      return json(res, error.statusCode ?? 400, { error: error.message });
+    }
+  }
   if (req.method === 'GET' && pathname === '/api/events') {
     if (user.role !== 'admin') return json(res, 403, { error: '仅管理员可以执行此操作' });
+    if (url.searchParams.get('history') === '1') {
+      const limit = Number(url.searchParams.get('limit') ?? 100);
+      const offset = Number(url.searchParams.get('offset') ?? 0);
+      const events = await auditLog.query({
+        keyword: url.searchParams.get('q') ?? '',
+        level: url.searchParams.get('level') ?? '',
+        action: url.searchParams.get('action') ?? '',
+        since: url.searchParams.get('since'),
+        limit: Number.isNaN(limit) ? 100 : limit,
+        offset: Number.isNaN(offset) ? 0 : offset,
+      });
+      return json(res, 200, { events, size: events.length });
+    }
     return json(res, 200, { events: filterEvents(securityEvents, Object.fromEntries(url.searchParams)) });
   }
   if (req.method === 'POST' && pathname === '/api/sandboxes') {
@@ -228,6 +302,10 @@ async function api(req, res, url) {
     if (!allowedAgents[agent]) return json(res, 400, { error: '仅支持 Claude Code、Codex 或 DSH' });
     const workspace = String(input.workspace ?? '').trim();
     if (!workspace.startsWith('/')) return json(res, 400, { error: '工作区必须为绝对路径' });
+    const currentSettings = await loadSettings();
+    if (!workspaceAllowed(workspace, Array.isArray(currentSettings.workspaceRoots) ? currentSettings.workspaceRoots : [])) {
+      return json(res, 400, { error: '工作区不在允许的根目录内' });
+    }
     const sandbox = {
       id: `sbx-${randomUUID().slice(0, 8)}`,
       name: safeName(input.name) || `agent-${agent}`,
@@ -241,6 +319,7 @@ async function api(req, res, url) {
       status: 'pending_approval', createdAt: new Date().toISOString(),
       ownerId: user.id, ownerName: user.displayName || user.username || user.id,
     };
+    sandbox.credentialPlaceholders = broker.issuePlaceholders(sandbox);
     const settings = await loadSettings();
     const sandboxes = await loadSandboxes();
     const running = sandboxes.filter((item) => ['running', 'paused', 'pending_approval'].includes(item.status) && (user.role === 'admin' || item.ownerId === user.id)).length;
@@ -272,8 +351,35 @@ async function api(req, res, url) {
     try { input = await readBody(req); } catch (error) { return json(res, error.statusCode ?? 400, { error: error.message }); }
     if (action === 'approve') {
       if (sandbox.status !== 'pending_approval') return json(res, 409, { error: '沙箱不是待审批状态' });
+      const manifest = compileManifest(sandbox);
+      let runtimeInfo;
+      try {
+        if (policies[policyKey(sandbox)].networkMode !== 'disabled') {
+          if (!(await ensureProxy())) throw new Error('外联代理启动失败');
+          const token = randomBytes(12).toString('hex');
+          sandbox.egressToken = token;
+          const allowed = new Set();
+          const injections = {};
+          for (const capability of sandbox.credentials || []) {
+            const item = await broker.get(capability);
+            if (item) {
+              for (const hostName of item.allowedHosts || []) allowed.add(hostName);
+              const placeholder = (sandbox.credentialPlaceholders || {})[capability];
+              if (placeholder) injections[placeholder] = { value: item.value, hosts: item.allowedHosts };
+            }
+          }
+          proxyRuntime.register(id, token, new EgressPolicy([...allowed], injections));
+          manifest.egress = { token };
+        }
+        runtimeInfo = launcher.start(sandbox, manifest);
+      } catch (error) {
+        proxyRuntime.unregister(id);
+        event('block', '启动失败', `${sandbox.name} 拉起失败：${error.message}`, user.id);
+        return json(res, 502, { error: `启动沙箱失败：${error.message}` });
+      }
       sandbox.status = 'running'; sandbox.startedAt = new Date().toISOString(); sandbox.approvedBy = user.id;
-      event('allow', '人工审批', `${sandbox.name} 已启动；凭据仅由主机 Broker 按策略代签`, user.id);
+      sandbox.runtime = runtimeInfo;
+      event('allow', '人工审批', `${sandbox.name} 已启动（${runtimeInfo.mode} 模式）；凭据仅由主机 Broker 按策略代签`, user.id);
     }
     if (action === 'reject') {
       if (sandbox.status !== 'pending_approval') return json(res, 409, { error: '沙箱不是待审批状态' });
@@ -283,16 +389,22 @@ async function api(req, res, url) {
     }
     if (action === 'pause') {
       if (sandbox.status !== 'running') return json(res, 409, { error: '仅运行中的沙箱可以暂停' });
+      launcher.pause(id);
+      proxyRuntime.setPaused(id, true);
       sandbox.status = 'paused'; sandbox.pausedAt = new Date().toISOString(); sandbox.pausedBy = user.id;
       event('info', '暂停沙箱', `${sandbox.name} 已暂停，外联和会话凭据冻结`, user.id);
     }
     if (action === 'resume') {
       if (sandbox.status !== 'paused') return json(res, 409, { error: '仅暂停中的沙箱可以恢复' });
+      launcher.resume(id);
+      proxyRuntime.setPaused(id, false);
       sandbox.status = 'running'; sandbox.resumedAt = new Date().toISOString(); sandbox.resumedBy = user.id;
       event('allow', '恢复沙箱', `${sandbox.name} 已恢复运行`, user.id);
     }
     if (action === 'terminate') {
       if (sandbox.status === 'terminated') return json(res, 409, { error: '沙箱已终止' });
+      launcher.stop(id);
+      proxyRuntime.unregister(id);
       sandbox.status = 'terminated'; sandbox.terminatedAt = new Date().toISOString(); sandbox.terminatedBy = user.id;
       event('block', '终止沙箱', `${sandbox.name} 已终止，短期会话凭据失效`, user.id);
     }
@@ -318,4 +430,13 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, HOST, () => console.log(`SafeDesk control plane listening on http://${HOST}:${PORT}`));
+server.listen(PORT, HOST, async () => {
+  const settings = await loadSettings();
+  auditLog.retentionDays = Number(settings.retainAuditDays || 30);
+  const existing = await auditLog.load();
+  if (!existing.length) {
+    for (const seed of securityEvents) await auditLog.append(seed);
+  }
+  await auditLog.prune();
+  console.log(`SafeDesk control plane listening on http://${HOST}:${PORT}`);
+});

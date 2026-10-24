@@ -81,6 +81,7 @@ SafeDesk 与市面主流企业级沙箱的能力对比（2026 年 10 月调研�
 
 - 架构设计：[docs/safedesk/ARCHITECTURE.md](docs/safedesk/ARCHITECTURE.md)
 - 市场调研：[docs/safedesk/MARKET-SANDBOX-SURVEY-2026-10.md](docs/safedesk/MARKET-SANDBOX-SURVEY-2026-10.md)
+- 需求清单（100 项）：[docs/safedesk/REQUIREMENTS-100.md](docs/safedesk/REQUIREMENTS-100.md)
 - 运行说明：[docs/safedesk/RUNBOOK.md](docs/safedesk/RUNBOOK.md)
 - 控制面：[apps/safedesk-control-plane/README.md](apps/safedesk-control-plane/README.md)
 - 底层运行时说明：[docs/safedesk/RUNTIME.md](docs/safedesk/RUNTIME.md)
@@ -155,6 +156,7 @@ SafeDesk versus mainstream enterprise sandboxes (surveyed October 2026):
 
 - Architecture: [docs/safedesk/ARCHITECTURE.md](docs/safedesk/ARCHITECTURE.md)
 - Market survey: [docs/safedesk/MARKET-SANDBOX-SURVEY-2026-10.md](docs/safedesk/MARKET-SANDBOX-SURVEY-2026-10.md)
+- Requirements backlog (100): [docs/safedesk/REQUIREMENTS-100.md](docs/safedesk/REQUIREMENTS-100.md)
 - Runbook: [docs/safedesk/RUNBOOK.md](docs/safedesk/RUNBOOK.md)
 - Control plane: [apps/safedesk-control-plane/README.md](apps/safedesk-control-plane/README.md)
 - Underlying runtime notes: [docs/safedesk/RUNTIME.md](docs/safedesk/RUNTIME.md)
