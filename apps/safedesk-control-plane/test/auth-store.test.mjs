@@ -79,6 +79,46 @@ test('loginAdmin rejects an unknown username', async () => {
   await assert.rejects(() => store.loginAdmin('root', 'SafeDesk@Admin'), { statusCode: 400 });
 });
 
+test('seeded admin must change the default password', async () => {
+  const admin = await store.userById('admin');
+  assert.equal(admin.mustChangePassword, true);
+  assert.equal(store.publicUser(admin).mustChangePassword, true);
+  assert.equal(store.publicUser(admin).canChangePassword, true);
+});
+
+test('admin can change the default password and old password stops working', async () => {
+  const isolatedDir = await mkdtemp(join(tmpdir(), 'safedesk-authstore-change-'));
+  const isolated = new AuthStore(isolatedDir);
+  await isolated.ready;
+  const session = await isolated.loginAdmin('admin', 'SafeDesk@Admin');
+  const changed = await isolated.changePassword(await isolated.userById('admin'), 'SafeDesk@Admin', 'NewDesk@Pass1', session.token);
+  assert.equal(changed.ok, true);
+  assert.equal(changed.user.mustChangePassword, false);
+  await assert.rejects(() => isolated.loginAdmin('admin', 'SafeDesk@Admin'), { statusCode: 400 });
+  const next = await isolated.loginAdmin('admin', 'NewDesk@Pass1');
+  assert.ok(next.token);
+  const restarted = new AuthStore(isolatedDir);
+  await restarted.ready;
+  await assert.rejects(() => restarted.loginAdmin('admin', 'SafeDesk@Admin'), { statusCode: 400 });
+  const afterRestart = await restarted.loginAdmin('admin', 'NewDesk@Pass1');
+  assert.ok(afterRestart.token);
+  await rm(isolatedDir, { recursive: true, force: true });
+});
+
+test('changePassword rejects the default password and a wrong current password', async () => {
+  const isolatedDir = await mkdtemp(join(tmpdir(), 'safedesk-authstore-reject-'));
+  const isolated = new AuthStore(isolatedDir);
+  await isolated.ready;
+  const admin = await isolated.userById('admin');
+  await assert.rejects(() => isolated.changePassword(admin, 'SafeDesk@Admin', 'SafeDesk@Admin'), { message: /默认密码/ });
+  await assert.rejects(() => isolated.changePassword(admin, 'wrong', 'Another@Pass1'), { message: /当前密码不正确/ });
+  await assert.rejects(() => isolated.changePassword(admin, 'SafeDesk@Admin', 'short'), { message: /至少 8 位/ });
+  await isolated.changePassword(admin, 'SafeDesk@Admin', 'NewDesk@Pass1');
+  const updated = await isolated.userById('admin');
+  await assert.rejects(() => isolated.changePassword(updated, 'NewDesk@Pass1', 'NewDesk@Pass1'), { message: /不能与当前密码相同/ });
+  await rm(isolatedDir, { recursive: true, force: true });
+});
+
 test('sessionUser resolves a live token and ignores a bogus one', async () => {
   const session = await store.loginAdmin('admin', 'SafeDesk@Admin');
   const user = await store.sessionUser(session.token);

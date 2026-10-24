@@ -16,7 +16,7 @@
 - 公网入口 / public endpoints：`https://218.11.5.249:10648/` 与 `https://111.62.156.213:10645/`（自签证书 / self-signed TLS）
 - 内网端口 / internal port：`8022`
 - 登录 / login：手机号验证码、微信扫码、管理员账户
-- 默认管理员 / default admin：`admin` / `SafeDesk@Admin`
+- 默认管理员 / default admin：`admin` / `SafeDesk@Admin`（登录后可在组织设置中修改密码；改密后重启不会恢复默认值）
 
 ## 启动控制面 / Start the control plane
 

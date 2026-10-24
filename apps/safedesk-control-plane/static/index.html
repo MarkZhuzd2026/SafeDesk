@@ -166,6 +166,12 @@
         <label>会话超时（分钟）</label><input id="sessionTimeoutMin" type="number" min="30" max="1440" />
         <label>安全公告</label><input id="notice" />
         <div style="margin-top:12px"><button id="saveSettings">保存设置</button></div>
+        <h2>修改管理员密码</h2>
+        <p id="passwordHint">默认密码仅用于首次登录，改密后重启服务也不会被覆盖。</p>
+        <label>当前密码</label><input id="currentPassword" type="password" autocomplete="current-password" />
+        <label>新密码</label><input id="newPassword" type="password" autocomplete="new-password" placeholder="至少 8 位，不要使用默认密码" />
+        <label>确认新密码</label><input id="confirmPassword" type="password" autocomplete="new-password" />
+        <div style="margin-top:12px"><button id="changePassword">更新密码</button></div>
       </div>
     </section>
   </main>
@@ -299,9 +305,14 @@
       templates = data.templates || [];
       allSandboxes = data.sandboxes || [];
       allEvents = data.securityEvents || [];
-      $('sessionHint').textContent = `${currentUser.displayName} · ${currentUser.role === 'admin' ? '管理员' : '普通用户'}`;
+      $('sessionHint').textContent = `${currentUser.displayName} · ${currentUser.role === 'admin' ? '管理员' : '普通用户'}${currentUser.mustChangePassword ? ' · 请先修改默认密码' : ''}`;
       $('eventsHint').classList.toggle('hidden', currentUser.role === 'admin');
       $('settingsPanel').classList.toggle('hidden', currentUser.role !== 'admin');
+      if (currentUser.role === 'admin') {
+        $('passwordHint').textContent = currentUser.mustChangePassword
+          ? '当前仍是默认密码，请立即修改。改密后重启服务不会恢复默认值。'
+          : '修改后立即生效，其他管理员会话会失效。不要继续使用默认密码。';
+      }
       $('policy').innerHTML = data.policies.map((p) => `<option value="${p.id}">${p.label}</option>`).join('');
       $('agentFilter').innerHTML = '<option value="">全部 Agent</option>' + data.agents.map((a) => `<option value="${a.id}">${a.label}</option>`).join('');
       $('policyFilter').innerHTML = '<option value="">全部策略</option>' + data.policies.map((p) => `<option value="${p.id}">${p.label}</option>`).join('');
@@ -440,6 +451,20 @@
       try {
         await api('/api/settings', { method:'POST', body: JSON.stringify({ orgName:$('orgName').value, maxConcurrent:Number($('maxConcurrent').value), sessionTimeoutMin:Number($('sessionTimeoutMin').value), notice:$('notice').value }) });
         await bootstrap();
+      } catch (error) { alert(error.message); }
+    };
+    $('changePassword').onclick = async () => {
+      if ($('newPassword').value !== $('confirmPassword').value) {
+        alert('两次输入的新密码不一致');
+        return;
+      }
+      try {
+        await api('/api/auth/password', { method:'POST', body: JSON.stringify({ currentPassword:$('currentPassword').value, newPassword:$('newPassword').value }) });
+        $('currentPassword').value = '';
+        $('newPassword').value = '';
+        $('confirmPassword').value = '';
+        await bootstrap();
+        alert('管理员密码已更新');
       } catch (error) { alert(error.message); }
     };
     $('closeDrawer').onclick = () => $('drawer').classList.add('hidden');

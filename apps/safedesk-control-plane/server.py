@@ -293,6 +293,25 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 AUTH.revoke(self.bearer())
             self.send_json(200, {"ok": True})
             return
+        if self.path == "/api/auth/password":
+            user = self.require_admin()
+            if user is None:
+                return
+            if not user.get("passwordHash"):
+                self.send_json(403, {"error": "仅管理员账户可以修改密码"})
+                return
+            try:
+                payload = self.body()
+                with LOCK:
+                    self.send_json(200, AUTH.change_password(
+                        user,
+                        str(payload.get("currentPassword", "")),
+                        str(payload.get("newPassword", "")),
+                        self.bearer(),
+                    ))
+            except ValueError as error:
+                self.send_json(400, {"error": str(error)})
+            return
         if self.path == "/api/sandboxes":
             user = self.require_user()
             if user is None:

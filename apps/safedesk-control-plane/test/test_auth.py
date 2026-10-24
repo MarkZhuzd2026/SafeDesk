@@ -157,6 +157,61 @@ class AuthApiTest(unittest.TestCase):
         self.assertEqual(settings["settings"]["orgName"], "SafeDesk 演示中心")
         self.assertEqual(settings["settings"]["maxConcurrent"], 12)
 
+    def test_admin_can_change_default_password(self):
+        isolated_dir = Path(tempfile.mkdtemp(prefix="safedesk-auth-change-"))
+        port = free_port()
+        env = {
+            **os.environ,
+            "PORT": str(port),
+            "SAFEDESK_DATA_DIR": str(isolated_dir),
+            "SAFEDESK_DATA_FILE": str(isolated_dir / "sandboxes.json"),
+            "SAFEDESK_AUTH": "1",
+            "SAFEDESK_DEMO": "1",
+            "SAFEDESK_ADMIN_USERNAME": "admin",
+            "SAFEDESK_ADMIN_PASSWORD": "SafeDesk@Admin",
+        }
+        server = subprocess.Popen([sys.executable, "server.py"], cwd=ROOT, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        base = f"http://127.0.0.1:{port}"
+        def call(method, path, body=None, token=None):
+            payload = None
+            headers = {}
+            if body is not None:
+                payload = json.dumps(body).encode("utf-8")
+                headers["Content-Type"] = "application/json"
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            request = urllib.request.Request(base + path, data=payload, headers=headers, method=method)
+            for _ in range(50):
+                try:
+                    with OPENER.open(request, timeout=5) as response:
+                        return response.status, json.loads(response.read() or b"{}")
+                except urllib.error.HTTPError as error:
+                    return error.code, json.loads(error.read() or b"{}")
+                except OSError:
+                    time.sleep(0.1)
+            raise RuntimeError("isolated auth server did not start")
+        try:
+            status, login = call("POST", "/api/auth/admin/login", {"username": "admin", "password": "SafeDesk@Admin"})
+            self.assertEqual(status, 200)
+            self.assertTrue(login["user"]["mustChangePassword"])
+            status, _ = call("POST", "/api/auth/password", {"currentPassword": "SafeDesk@Admin", "newPassword": "NewDesk@Pass1"})
+            self.assertEqual(status, 401)
+            status, too_short = call("POST", "/api/auth/password", {"currentPassword": "SafeDesk@Admin", "newPassword": "short"}, login["token"])
+            self.assertEqual(status, 400)
+            self.assertIn("至少 8 位", too_short["error"])
+            status, changed = call("POST", "/api/auth/password", {"currentPassword": "SafeDesk@Admin", "newPassword": "NewDesk@Pass1"}, login["token"])
+            self.assertEqual(status, 200)
+            self.assertFalse(changed["user"]["mustChangePassword"])
+            status, old_login = call("POST", "/api/auth/admin/login", {"username": "admin", "password": "SafeDesk@Admin"})
+            self.assertEqual(status, 400)
+            status, next_login = call("POST", "/api/auth/admin/login", {"username": "admin", "password": "NewDesk@Pass1"})
+            self.assertEqual(status, 200)
+            self.assertFalse(next_login["user"]["mustChangePassword"])
+        finally:
+            server.terminate()
+            server.wait(timeout=5)
+            shutil.rmtree(isolated_dir, ignore_errors=True)
+
     def test_auth_config_methods(self):
         status, data = self.request("GET", "/api/auth/config")
         self.assertEqual(status, 200)

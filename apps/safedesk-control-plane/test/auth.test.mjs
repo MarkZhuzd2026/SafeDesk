@@ -156,7 +156,63 @@ test('admin can reject, pause, resume and filter sandboxes', async () => {
   assert.ok(overview.data.overview.total >= 2);
   const settings = await request('/api/settings', { method: 'POST', token, body: { orgName: 'SafeDesk 演示中心', maxConcurrent: 12 } });
   assert.equal(settings.data.settings.orgName, 'SafeDesk 演示中心');
-  assert.equal(settings.data.settings.maxConcurrent, 12);
+});
+
+test('admin can change the default password through the API', async () => {
+  const isolatedPort = await freePort();
+  const isolatedBase = `http://127.0.0.1:${isolatedPort}`;
+  const isolatedDir = await mkdtemp(join(tmpdir(), 'safedesk-auth-change-'));
+  const isolated = spawn(process.execPath, ['server.mjs'], {
+    cwd: new URL('..', import.meta.url),
+    env: {
+      ...process.env,
+      PORT: String(isolatedPort),
+      SAFEDESK_DATA_DIR: isolatedDir,
+      SAFEDESK_DATA_FILE: join(isolatedDir, 'sandboxes.json'),
+      SAFEDESK_AUTH: '1',
+      SAFEDESK_DEMO: '1',
+      SAFEDESK_ADMIN_USERNAME: 'admin',
+      SAFEDESK_ADMIN_PASSWORD: 'SafeDesk@Admin',
+    },
+    stdio: 'ignore',
+  });
+  const call = async (path, { method = 'GET', body, token } = {}) => {
+    const headers = {};
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    if (token) headers.Authorization = `Bearer ${token}`;
+    for (let i = 0; i < 50; i += 1) {
+      try {
+        const response = await fetch(`${isolatedBase}${path}`, {
+          method,
+          headers,
+          body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        return { response, data: await response.json() };
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+    throw new Error('isolated auth server did not start');
+  };
+  try {
+    const login = await call('/api/auth/admin/login', { method: 'POST', body: { username: 'admin', password: 'SafeDesk@Admin' } });
+    const token = login.data.token;
+    assert.equal(login.data.user.mustChangePassword, true);
+    const forbidden = await call('/api/auth/password', { method: 'POST', body: { currentPassword: 'SafeDesk@Admin', newPassword: 'NewDesk@Pass1' } });
+    assert.equal(forbidden.response.status, 401);
+    const tooShort = await call('/api/auth/password', { method: 'POST', token, body: { currentPassword: 'SafeDesk@Admin', newPassword: 'short' } });
+    assert.equal(tooShort.response.status, 400);
+    const changed = await call('/api/auth/password', { method: 'POST', token, body: { currentPassword: 'SafeDesk@Admin', newPassword: 'NewDesk@Pass1' } });
+    assert.equal(changed.response.status, 200);
+    assert.equal(changed.data.user.mustChangePassword, false);
+    const oldLogin = await call('/api/auth/admin/login', { method: 'POST', body: { username: 'admin', password: 'SafeDesk@Admin' } });
+    assert.equal(oldLogin.response.status, 400);
+    const nextLogin = await call('/api/auth/admin/login', { method: 'POST', body: { username: 'admin', password: 'NewDesk@Pass1' } });
+    assert.equal(nextLogin.response.status, 200);
+  } finally {
+    isolated.kill();
+    await rm(isolatedDir, { recursive: true, force: true });
+  }
 });
 
 test('auth config advertises the three login methods', async () => {

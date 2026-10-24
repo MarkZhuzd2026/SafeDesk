@@ -52,6 +52,15 @@ curl -s -X POST $BASE/api/auth/admin/login \
 TOKEN=<返回的 token>
 ```
 
+管理员可在控制台组织设置中修改默认密码；改密后重启服务不会恢复默认值。API 示例：
+
+```bash
+curl -s -X POST $BASE/api/auth/password \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"currentPassword":"SafeDesk@Admin","newPassword":"<new-password>"}'
+```
+
 4. 确认服务存活：
 
 ```bash

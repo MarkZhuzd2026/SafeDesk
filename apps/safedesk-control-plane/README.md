@@ -34,9 +34,9 @@ PORT=8022 HOST=0.0.0.0 python3 server.py
 
 两者都映射到内网 `8022`。控制面默认开启登录：手机号验证码、微信扫码（本地二维码工单）和管理员账户。普通用户只能看到自己的沙箱，审批与安全事件仅管理员可见。工作台还提供总览指标、任务模板、搜索筛选、审批拒绝、暂停恢复和组织设置。
 
-默认管理员 / default admin：`admin` / `SafeDesk@Admin`
+默认管理员 / default admin：`admin` / `SafeDesk@Admin`（首次登录后可在控制台修改，重启不会恢复默认密码）
 
-可用环境变量覆盖：`SAFEDESK_ADMIN_USERNAME`、`SAFEDESK_ADMIN_PASSWORD`、`SAFEDESK_ADMIN_PHONES`。
+可用环境变量覆盖：`SAFEDESK_ADMIN_USERNAME`、`SAFEDESK_ADMIN_PASSWORD`、`SAFEDESK_ADMIN_PHONES`。`SAFEDESK_ADMIN_PASSWORD` 只用于首次创建管理员账户。
 
 若公网入口已配置 TLS 证书，设置：
 

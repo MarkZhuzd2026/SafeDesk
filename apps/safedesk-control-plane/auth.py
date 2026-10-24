@@ -23,6 +23,7 @@ WECHAT_TTL_SECONDS = 180
 WECOM_TTL_SECONDS = 180
 DEFAULT_ADMIN_USERNAME = "admin"
 DEFAULT_ADMIN_PASSWORD = "SafeDesk@Admin"
+MIN_PASSWORD_LENGTH = 8
 
 LOCK = threading.Lock()
 
@@ -63,6 +64,7 @@ class AuthStore:
             "demo": self.demo,
             "adminUsername": self.admin_username,
             "wecomReady": True,
+            "passwordMinLength": MIN_PASSWORD_LENGTH,
         }
 
     def _load(self, path: Path, default):
@@ -108,13 +110,14 @@ class AuthStore:
             "displayName": user.get("displayName") or user.get("username") or "用户",
             "phone": user.get("phone"),
             "username": user.get("username"),
+            "mustChangePassword": bool(user.get("mustChangePassword")),
+            "canChangePassword": user.get("role") == "admin" and bool(user.get("passwordHash")),
         }
 
     def _ensure_admin(self) -> None:
         with LOCK:
             users = self.users()
             admin = next((item for item in users if item.get("username") == self.admin_username), None)
-            hashed = self.hash_password(self.admin_password)
             if admin is None:
                 users.append({
                     "id": "admin",
@@ -122,13 +125,15 @@ class AuthStore:
                     "role": "admin",
                     "provider": "admin",
                     "displayName": "管理员",
-                    "passwordHash": hashed,
+                    "passwordHash": self.hash_password(self.admin_password),
+                    "mustChangePassword": self.admin_password == DEFAULT_ADMIN_PASSWORD,
                     "createdAt": iso_now(),
                 })
-            else:
-                admin["passwordHash"] = hashed
-                admin["role"] = "admin"
-                admin["provider"] = "admin"
+                self.save_users(users)
+                return
+            admin["role"] = "admin"
+            admin["provider"] = "admin"
+            admin.setdefault("mustChangePassword", self.verify_password(DEFAULT_ADMIN_PASSWORD, admin.get("passwordHash", "")))
             self.save_users(users)
 
     def _upsert_user(self, user: dict) -> dict:
@@ -313,3 +318,33 @@ class AuthStore:
         if not user or not self.verify_password(password, user.get("passwordHash", "")):
             raise ValueError("管理员账号或密码不正确")
         return self.create_session(user)
+
+    def _validate_new_password(self, password: str) -> str:
+        value = str(password or "")
+        if len(value) < MIN_PASSWORD_LENGTH:
+            raise ValueError(f"新密码至少 {MIN_PASSWORD_LENGTH} 位")
+        if value.strip() != value or " " in value:
+            raise ValueError("新密码不能包含空格")
+        if value == DEFAULT_ADMIN_PASSWORD:
+            raise ValueError("请不要继续使用默认密码")
+        return value
+
+    def change_password(self, user: dict, current_password: str, new_password: str, keep_token: str | None = None) -> dict:
+        if not user or user.get("role") != "admin" or not user.get("passwordHash"):
+            raise ValueError("仅管理员账户可以修改密码")
+        if not self.verify_password(str(current_password or ""), user.get("passwordHash", "")):
+            raise ValueError("当前密码不正确")
+        next_password = self._validate_new_password(new_password)
+        if self.verify_password(next_password, user.get("passwordHash", "")):
+            raise ValueError("新密码不能与当前密码相同")
+        users = self.users()
+        record = next((item for item in users if item["id"] == user["id"]), None)
+        if not record:
+            raise ValueError("未找到管理员账户")
+        record["passwordHash"] = self.hash_password(next_password)
+        record["mustChangePassword"] = False
+        record["passwordChangedAt"] = iso_now()
+        self.save_users(users)
+        sessions = [item for item in self.sessions() if keep_token and item.get("token") == keep_token]
+        self.save_sessions(sessions)
+        return {"ok": True, "user": self.public_user(record)}

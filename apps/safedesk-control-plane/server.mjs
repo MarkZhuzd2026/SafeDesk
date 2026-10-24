@@ -165,6 +165,23 @@ async function api(req, res, url) {
     await auth.revoke(bearer(req));
     return json(res, 200, { ok: true });
   }
+  if (req.method === 'POST' && pathname === '/api/auth/password') {
+    const user = await currentUser(req);
+    if (!user) return json(res, 401, { error: '请先登录' });
+    if (user.role !== 'admin') return json(res, 403, { error: '仅管理员可以执行此操作' });
+    try {
+      const input = await readBody(req);
+      await auth.ready;
+      return json(res, 200, await auth.changePassword(
+        user,
+        String(input.currentPassword || ''),
+        String(input.newPassword || ''),
+        bearer(req),
+      ));
+    } catch (error) {
+      return json(res, error.statusCode ?? 400, { error: error.message });
+    }
+  }
 
   const user = await currentUser(req);
   if (pathname === '/api/auth/me') {

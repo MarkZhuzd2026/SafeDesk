@@ -11,6 +11,7 @@ const WECHAT_TTL_SECONDS = 180;
 const WECOM_TTL_SECONDS = 180;
 const DEFAULT_ADMIN_USERNAME = 'admin';
 const DEFAULT_ADMIN_PASSWORD = 'SafeDesk@Admin';
+const MIN_PASSWORD_LENGTH = 8;
 
 function isoNow() {
   return new Date().toISOString();
@@ -44,6 +45,7 @@ export class AuthStore {
       demo: this.demo,
       adminUsername: this.adminUsername,
       wecomReady: true,
+      passwordMinLength: MIN_PASSWORD_LENGTH,
     };
   }
 
@@ -93,12 +95,13 @@ export class AuthStore {
       displayName: user.displayName || user.username || '用户',
       phone: user.phone,
       username: user.username,
+      mustChangePassword: Boolean(user.mustChangePassword),
+      canChangePassword: user.role === 'admin' && Boolean(user.passwordHash),
     };
   }
 
   async ensureAdmin() {
     const users = await this.users();
-    const hashed = this.hashPassword(this.adminPassword);
     const existing = users.find((item) => item.username === this.adminUsername);
     if (!existing) {
       users.push({
@@ -107,13 +110,16 @@ export class AuthStore {
         role: 'admin',
         provider: 'admin',
         displayName: '管理员',
-        passwordHash: hashed,
+        passwordHash: this.hashPassword(this.adminPassword),
+        mustChangePassword: this.adminPassword === DEFAULT_ADMIN_PASSWORD,
         createdAt: isoNow(),
       });
     } else {
-      existing.passwordHash = hashed;
       existing.role = 'admin';
       existing.provider = 'admin';
+      if (existing.mustChangePassword === undefined) {
+        existing.mustChangePassword = this.verifyPassword(DEFAULT_ADMIN_PASSWORD, existing.passwordHash);
+      }
     }
     await this.save(this.usersFile, users);
   }
@@ -304,5 +310,44 @@ export class AuthStore {
       throw Object.assign(new Error('管理员账号或密码不正确'), { statusCode: 400 });
     }
     return this.createSession(user);
+  }
+
+  validateNewPassword(password) {
+    const value = String(password || '');
+    if (value.length < MIN_PASSWORD_LENGTH) {
+      throw Object.assign(new Error(`新密码至少 ${MIN_PASSWORD_LENGTH} 位`), { statusCode: 400 });
+    }
+    if (value.trim() !== value || value.includes(' ')) {
+      throw Object.assign(new Error('新密码不能包含空格'), { statusCode: 400 });
+    }
+    if (value === DEFAULT_ADMIN_PASSWORD) {
+      throw Object.assign(new Error('请不要继续使用默认密码'), { statusCode: 400 });
+    }
+    return value;
+  }
+
+  async changePassword(user, currentPassword, newPassword, keepToken) {
+    if (!user || user.role !== 'admin' || !user.passwordHash) {
+      throw Object.assign(new Error('仅管理员账户可以修改密码'), { statusCode: 403 });
+    }
+    if (!this.verifyPassword(String(currentPassword || ''), user.passwordHash)) {
+      throw Object.assign(new Error('当前密码不正确'), { statusCode: 400 });
+    }
+    const nextPassword = this.validateNewPassword(newPassword);
+    if (this.verifyPassword(nextPassword, user.passwordHash)) {
+      throw Object.assign(new Error('新密码不能与当前密码相同'), { statusCode: 400 });
+    }
+    const users = await this.users();
+    const record = users.find((item) => item.id === user.id);
+    if (!record) throw Object.assign(new Error('未找到管理员账户'), { statusCode: 400 });
+    record.passwordHash = this.hashPassword(nextPassword);
+    record.mustChangePassword = false;
+    record.passwordChangedAt = isoNow();
+    await this.save(this.usersFile, users);
+    const sessions = keepToken
+      ? (await this.sessions()).filter((item) => item.token === keepToken)
+      : [];
+    await this.save(this.sessionsFile, sessions);
+    return { ok: true, user: this.publicUser(record) };
   }
 }

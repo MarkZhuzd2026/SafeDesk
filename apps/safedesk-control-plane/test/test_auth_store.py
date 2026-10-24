@@ -76,6 +76,48 @@ class AuthStoreTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.login_admin("root", "SafeDesk@Admin")
 
+    def test_seeded_admin_must_change_default_password(self):
+        admin = self.store.user_by_id("admin")
+        self.assertTrue(admin["mustChangePassword"])
+        published = self.store.public_user(admin)
+        self.assertTrue(published["mustChangePassword"])
+        self.assertTrue(published["canChangePassword"])
+
+    def test_admin_can_change_password_and_restart_keeps_it(self):
+        isolated_dir = Path(tempfile.mkdtemp(prefix="safedesk-authstore-change-"))
+        isolated = AuthStore(isolated_dir)
+        session = isolated.login_admin("admin", "SafeDesk@Admin")
+        changed = isolated.change_password(isolated.user_by_id("admin"), "SafeDesk@Admin", "NewDesk@Pass1", session["token"])
+        self.assertTrue(changed["ok"])
+        self.assertFalse(changed["user"]["mustChangePassword"])
+        with self.assertRaises(ValueError):
+            isolated.login_admin("admin", "SafeDesk@Admin")
+        self.assertTrue(isolated.login_admin("admin", "NewDesk@Pass1")["token"])
+        restarted = AuthStore(isolated_dir)
+        with self.assertRaises(ValueError):
+            restarted.login_admin("admin", "SafeDesk@Admin")
+        self.assertTrue(restarted.login_admin("admin", "NewDesk@Pass1")["token"])
+        shutil.rmtree(isolated_dir, ignore_errors=True)
+
+    def test_change_password_rejects_default_and_wrong_current(self):
+        isolated_dir = Path(tempfile.mkdtemp(prefix="safedesk-authstore-reject-"))
+        isolated = AuthStore(isolated_dir)
+        admin = isolated.user_by_id("admin")
+        with self.assertRaises(ValueError) as default_err:
+            isolated.change_password(admin, "SafeDesk@Admin", "SafeDesk@Admin")
+        self.assertIn("默认密码", str(default_err.exception))
+        with self.assertRaises(ValueError) as current_err:
+            isolated.change_password(admin, "wrong", "Another@Pass1")
+        self.assertIn("当前密码不正确", str(current_err.exception))
+        with self.assertRaises(ValueError) as short_err:
+            isolated.change_password(admin, "SafeDesk@Admin", "short")
+        self.assertIn("至少 8 位", str(short_err.exception))
+        isolated.change_password(admin, "SafeDesk@Admin", "NewDesk@Pass1")
+        with self.assertRaises(ValueError) as same_err:
+            isolated.change_password(isolated.user_by_id("admin"), "NewDesk@Pass1", "NewDesk@Pass1")
+        self.assertIn("不能与当前密码相同", str(same_err.exception))
+        shutil.rmtree(isolated_dir, ignore_errors=True)
+
     def test_session_user_live_and_bogus(self):
         session = self.store.login_admin("admin", "SafeDesk@Admin")
         self.assertEqual(self.store.session_user(session["token"])["id"], "admin")
