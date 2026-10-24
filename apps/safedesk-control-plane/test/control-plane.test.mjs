@@ -80,6 +80,10 @@ test('GET /api/bootstrap returns policy catalog, agents and seeded security even
   assert.ok(Array.isArray(data.sandboxes));
   assert.ok(data.securityEvents.length >= 3);
   assert.ok(data.securityEvents.some((e) => e.level === 'block'));
+  assert.ok(data.overview);
+  assert.equal(typeof data.overview.total, 'number');
+  assert.ok(data.catalog.policies.length === 3);
+  assert.ok(data.templates.length >= 3);
 });
 
 test('creates a pending sandbox without accepting secrets', async () => {

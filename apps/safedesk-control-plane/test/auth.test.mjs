@@ -128,6 +128,37 @@ test('rejects invalid mainland phone numbers before sending OTP', async () => {
   assert.equal(data.error, '请输入正确的 11 位手机号');
 });
 
+test('admin can reject, pause, resume and filter sandboxes', async () => {
+  const login = await request('/api/auth/admin/login', { method: 'POST', body: { username: 'admin', password: 'SafeDesk@Admin' } });
+  const token = login.data.token;
+  const created = await request('/api/sandboxes', {
+    method: 'POST',
+    token,
+    body: { name: 'pause-me', agent: 'codex', policyId: 'review', workspace: '/tmp/pause', purpose: '审阅依赖' },
+  });
+  assert.equal(created.data.sandbox.risk, '低风险');
+  const approved = await request(`/api/sandboxes/${created.data.sandbox.id}/approve`, { method: 'POST', token });
+  assert.equal(approved.data.sandbox.status, 'running');
+  const paused = await request(`/api/sandboxes/${created.data.sandbox.id}/pause`, { method: 'POST', token });
+  assert.equal(paused.data.sandbox.status, 'paused');
+  const resumed = await request(`/api/sandboxes/${created.data.sandbox.id}/resume`, { method: 'POST', token });
+  assert.equal(resumed.data.sandbox.status, 'running');
+  const pending = await request('/api/sandboxes', {
+    method: 'POST',
+    token,
+    body: { name: 'reject-me', agent: 'dsh', policyId: 'build', workspace: '/tmp/reject' },
+  });
+  const rejected = await request(`/api/sandboxes/${pending.data.sandbox.id}/reject`, { method: 'POST', token, body: { reason: '超出构建范围' } });
+  assert.equal(rejected.data.sandbox.status, 'rejected');
+  const filtered = await request('/api/sandboxes?status=rejected&q=reject', { token });
+  assert.ok(filtered.data.sandboxes.some((item) => item.id === pending.data.sandbox.id));
+  const overview = await request('/api/overview', { token });
+  assert.ok(overview.data.overview.total >= 2);
+  const settings = await request('/api/settings', { method: 'POST', token, body: { orgName: 'SafeDesk 演示中心', maxConcurrent: 12 } });
+  assert.equal(settings.data.settings.orgName, 'SafeDesk 演示中心');
+  assert.equal(settings.data.settings.maxConcurrent, 12);
+});
+
 test('wechat QR ticket can be confirmed into a user session', async () => {
   const started = await request('/api/auth/wechat/start', { method: 'POST' });
   assert.equal(started.response.status, 200);

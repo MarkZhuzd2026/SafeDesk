@@ -124,6 +124,39 @@ class AuthApiTest(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(data["error"], "请输入正确的 11 位手机号")
 
+    def test_admin_can_reject_pause_resume_and_filter(self):
+        _, login = self.request("POST", "/api/auth/admin/login", {"username": "admin", "password": "SafeDesk@Admin"})
+        token = login["token"]
+        _, created = self.request("POST", "/api/sandboxes", {
+            "name": "pause-me",
+            "agent": "codex",
+            "policyId": "review",
+            "workspace": "/tmp/pause",
+            "purpose": "审阅依赖",
+        }, token)
+        self.assertEqual(created["sandbox"]["risk"], "低风险")
+        _, approved = self.request("POST", f"/api/sandboxes/{created['sandbox']['id']}/approve", token=token)
+        self.assertEqual(approved["sandbox"]["status"], "running")
+        _, paused = self.request("POST", f"/api/sandboxes/{created['sandbox']['id']}/pause", token=token)
+        self.assertEqual(paused["sandbox"]["status"], "paused")
+        _, resumed = self.request("POST", f"/api/sandboxes/{created['sandbox']['id']}/resume", token=token)
+        self.assertEqual(resumed["sandbox"]["status"], "running")
+        _, pending = self.request("POST", "/api/sandboxes", {
+            "name": "reject-me",
+            "agent": "dsh",
+            "policyId": "build",
+            "workspace": "/tmp/reject",
+        }, token)
+        _, rejected = self.request("POST", f"/api/sandboxes/{pending['sandbox']['id']}/reject", {"reason": "超出构建范围"}, token)
+        self.assertEqual(rejected["sandbox"]["status"], "rejected")
+        _, filtered = self.request("GET", "/api/sandboxes?status=rejected&q=reject", token=token)
+        self.assertTrue(any(item["id"] == pending["sandbox"]["id"] for item in filtered["sandboxes"]))
+        _, overview = self.request("GET", "/api/overview", token=token)
+        self.assertGreaterEqual(overview["overview"]["total"], 2)
+        _, settings = self.request("POST", "/api/settings", {"orgName": "SafeDesk 演示中心", "maxConcurrent": 12}, token)
+        self.assertEqual(settings["settings"]["orgName"], "SafeDesk 演示中心")
+        self.assertEqual(settings["settings"]["maxConcurrent"], 12)
+
     def test_wechat_qr_becomes_user_session(self):
         _, started = self.request("POST", "/api/auth/wechat/start")
         status, _ = self.request("POST", "/api/auth/wechat/confirm", {"ticket": started["ticket"]})

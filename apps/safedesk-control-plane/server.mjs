@@ -4,6 +4,7 @@ import { join, normalize, extname, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { allowedAgents, compileManifest, policies } from './src/policy.mjs';
 import { AuthStore } from './src/auth.mjs';
+import { defaultSettings, defaultTemplates, catalog, enrichSandbox, filterEvents, filterSandboxes, mergeSettings, overview as productOverview, riskFor } from './src/product.mjs';
 
 const PORT = Number(process.env.PORT ?? 8022);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -12,6 +13,7 @@ const root = new URL('.', import.meta.url).pathname;
 const staticRoot = join(root, 'static');
 const dataDir = process.env.SAFEDESK_DATA_DIR ?? join(root, 'data');
 const dataFile = process.env.SAFEDESK_DATA_FILE ?? join(dataDir, 'sandboxes.json');
+const settingsFile = join(dataDir, 'settings.json');
 const auth = new AuthStore(dataDir);
 
 const securityEvents = [
@@ -32,6 +34,23 @@ async function loadSandboxes() {
 
 async function saveSandboxes(items) {
   await writeFile(dataFile, JSON.stringify(items, null, 2) + '\n');
+}
+
+async function loadSettings() {
+  await mkdir(dataDir, { recursive: true });
+  try {
+    return mergeSettings(JSON.parse(await readFile(settingsFile, 'utf8')));
+  } catch {
+    const settings = mergeSettings(defaultSettings);
+    await writeFile(settingsFile, `${JSON.stringify(settings, null, 2)}\n`);
+    return settings;
+  }
+}
+
+async function saveSettings(input) {
+  const settings = mergeSettings(input);
+  await writeFile(settingsFile, `${JSON.stringify(settings, null, 2)}\n`);
+  return settings;
 }
 
 function json(res, status, body) {
@@ -138,19 +157,33 @@ async function api(req, res, url) {
   if (!user) return json(res, 401, { error: '请先登录' });
 
   if (req.method === 'GET' && pathname === '/api/bootstrap') {
-    const sandboxes = visibleSandboxes(await loadSandboxes(), user);
+    const sandboxes = visibleSandboxes(await loadSandboxes(), user).map(enrichSandbox);
+    const events = user.role === 'admin' ? securityEvents : [];
     return json(res, 200, {
       user: AUTH_ENABLED ? auth.publicUser(user) : user,
+      overview: productOverview(sandboxes, securityEvents, user),
+      catalog: catalog(),
+      templates: defaultTemplates,
+      settings: await loadSettings(),
       policies: Object.values(policies),
       agents: Object.entries(allowedAgents).map(([id, item]) => ({ id, ...item })),
       sandboxes,
-      securityEvents: user.role === 'admin' ? securityEvents : [],
+      securityEvents: events,
     });
   }
-  if (req.method === 'GET' && pathname === '/api/sandboxes') return json(res, 200, { sandboxes: visibleSandboxes(await loadSandboxes(), user) });
+  if (req.method === 'GET' && pathname === '/api/overview') {
+    const sandboxes = visibleSandboxes(await loadSandboxes(), user);
+    return json(res, 200, { overview: productOverview(sandboxes, securityEvents, user) });
+  }
+  if (req.method === 'GET' && pathname === '/api/catalog') return json(res, 200, catalog());
+  if (req.method === 'GET' && pathname === '/api/templates') return json(res, 200, { templates: defaultTemplates });
+  if (req.method === 'GET' && pathname === '/api/settings') return json(res, 200, { settings: await loadSettings() });
+  if (req.method === 'GET' && pathname === '/api/sandboxes') {
+    return json(res, 200, { sandboxes: filterSandboxes(visibleSandboxes(await loadSandboxes(), user), Object.fromEntries(url.searchParams)) });
+  }
   if (req.method === 'GET' && pathname === '/api/events') {
     if (user.role !== 'admin') return json(res, 403, { error: '仅管理员可以执行此操作' });
-    return json(res, 200, { events: securityEvents });
+    return json(res, 200, { events: filterEvents(securityEvents, Object.fromEntries(url.searchParams)) });
   }
   if (req.method === 'POST' && pathname === '/api/sandboxes') {
     let input;
@@ -168,28 +201,61 @@ async function api(req, res, url) {
       packages: Array.isArray(input.packages) && input.packages.length ? input.packages.slice(0, 8) : ['wasmer/bash@latest'],
       credentials: Array.isArray(input.credentials) ? input.credentials.slice(0, 8) : [],
       mcpServers: Array.isArray(input.mcpServers) ? input.mcpServers.slice(0, 12) : [],
+      purpose: String(input.purpose || '').trim().slice(0, 160),
+      notes: String(input.notes || '').trim().slice(0, 240),
+      risk: riskFor(policyId),
       status: 'pending_approval', createdAt: new Date().toISOString(),
       ownerId: user.id, ownerName: user.displayName || user.username || user.id,
     };
+    const settings = await loadSettings();
     const sandboxes = await loadSandboxes();
+    const running = sandboxes.filter((item) => ['running', 'paused', 'pending_approval'].includes(item.status) && (user.role === 'admin' || item.ownerId === user.id)).length;
+    if (user.role !== 'admin' && running >= Number(settings.maxConcurrent || 8)) return json(res, 409, { error: '已达到并发沙箱上限' });
     sandboxes.unshift(sandbox);
     await saveSandboxes(sandboxes);
     event('info', '创建待审批沙箱', `${sandbox.name} 使用 ${policies[policyId].label} 策略`, user.id);
-    return json(res, 201, { sandbox, manifest: compileManifest(sandbox) });
+    return json(res, 201, { sandbox: enrichSandbox(sandbox), manifest: compileManifest(sandbox) });
   }
-  const match = pathname.match(/^\/api\/sandboxes\/(sbx-[\w-]+)\/(approve|terminate|manifest)$/);
+  if (pathname === '/api/settings' && req.method === 'POST') {
+    if (user.role !== 'admin') return json(res, 403, { error: '仅管理员可以执行此操作' });
+    let input;
+    try { input = await readBody(req); } catch (error) { return json(res, error.statusCode ?? 400, { error: error.message }); }
+    const settings = await saveSettings(input);
+    event('info', '更新组织设置', `${settings.orgName} 已保存并发上限 ${settings.maxConcurrent}`, user.id);
+    return json(res, 200, { settings });
+  }
+  const match = pathname.match(/^\/api\/sandboxes\/(sbx-[\w-]+)\/(approve|reject|pause|resume|terminate|manifest|activity)$/);
   if (match) {
     const [, id, action] = match;
-    if (action === 'approve' && user.role !== 'admin') return json(res, 403, { error: '仅管理员可以执行此操作' });
+    if (['approve', 'reject'].includes(action) && user.role !== 'admin') return json(res, 403, { error: '仅管理员可以执行此操作' });
     const sandboxes = await loadSandboxes();
     const sandbox = sandboxes.find((item) => item.id === id);
     if (!sandbox || !canAccess(user, sandbox)) return json(res, 404, { error: '未找到沙箱' });
     if (action === 'manifest' && req.method === 'GET') return json(res, 200, { manifest: compileManifest(sandbox) });
+    if (action === 'activity' && req.method === 'GET') return json(res, 200, { events: securityEvents.filter((item) => String(item.detail || '').includes(sandbox.name)) });
     if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
+    let input = {};
+    try { input = await readBody(req); } catch (error) { return json(res, error.statusCode ?? 400, { error: error.message }); }
     if (action === 'approve') {
       if (sandbox.status !== 'pending_approval') return json(res, 409, { error: '沙箱不是待审批状态' });
       sandbox.status = 'running'; sandbox.startedAt = new Date().toISOString(); sandbox.approvedBy = user.id;
       event('allow', '人工审批', `${sandbox.name} 已启动；凭据仅由主机 Broker 按策略代签`, user.id);
+    }
+    if (action === 'reject') {
+      if (sandbox.status !== 'pending_approval') return json(res, 409, { error: '沙箱不是待审批状态' });
+      sandbox.status = 'rejected'; sandbox.rejectedAt = new Date().toISOString(); sandbox.rejectedBy = user.id;
+      sandbox.rejectReason = String(input.reason || '不符合安全策略').trim().slice(0, 160);
+      event('block', '拒绝启动', `${sandbox.name} 被拒绝：${sandbox.rejectReason}`, user.id);
+    }
+    if (action === 'pause') {
+      if (sandbox.status !== 'running') return json(res, 409, { error: '仅运行中的沙箱可以暂停' });
+      sandbox.status = 'paused'; sandbox.pausedAt = new Date().toISOString(); sandbox.pausedBy = user.id;
+      event('info', '暂停沙箱', `${sandbox.name} 已暂停，外联和会话凭据冻结`, user.id);
+    }
+    if (action === 'resume') {
+      if (sandbox.status !== 'paused') return json(res, 409, { error: '仅暂停中的沙箱可以恢复' });
+      sandbox.status = 'running'; sandbox.resumedAt = new Date().toISOString(); sandbox.resumedBy = user.id;
+      event('allow', '恢复沙箱', `${sandbox.name} 已恢复运行`, user.id);
     }
     if (action === 'terminate') {
       if (sandbox.status === 'terminated') return json(res, 409, { error: '沙箱已终止' });
@@ -197,7 +263,7 @@ async function api(req, res, url) {
       event('block', '终止沙箱', `${sandbox.name} 已终止，短期会话凭据失效`, user.id);
     }
     await saveSandboxes(sandboxes);
-    return json(res, 200, { sandbox });
+    return json(res, 200, { sandbox: enrichSandbox(sandbox) });
   }
   return json(res, 404, { error: 'Not found' });
 }

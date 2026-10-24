@@ -23,6 +23,15 @@
     pre { background:#0f1728; color:#dbe7ff; padding:12px; border-radius:12px; overflow:auto; font-size:12px; }
     .event { font-size:13px; padding:8px 0; border-bottom:1px dashed var(--line); } .event b { display:block; }
     .hidden { display:none !important; }
+    .dashboard { grid-column:1/-1; display:grid; grid-template-columns:repeat(6,1fr); gap:10px; }
+    .metric { padding:14px; border:1px solid var(--line); border-radius:14px; background:linear-gradient(145deg,#fff,#f8fbff); }
+    .metric strong { display:block; font-size:25px; margin:4px 0; } .metric small { font-size:11px; }
+    .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:12px; } .toolbar input,.toolbar select { width:auto; min-width:130px; padding:8px 10px; }
+    .toolbar button { padding:8px 11px; }
+    .drawer { position:fixed; inset:0; background:rgba(15,23,40,.35); display:grid; place-items:center; z-index:10; }
+    .drawer-card { width:min(720px,calc(100% - 32px)); max-height:85vh; overflow:auto; background:#fff; border-radius:20px; padding:20px; box-shadow:0 24px 80px rgba(15,23,40,.25); }
+    .risk { font-size:11px; padding:3px 7px; border-radius:999px; background:#eef3fb; color:var(--muted); } .risk.high,.risk.高风险 { background:#ffeded;color:#c62828; } .risk.中风险 { background:#fff5df;color:#a76500; } .risk.低风险 { background:#e9f8ef;color:#0f7c47; }
+    @media (max-width:1180px) { .dashboard { grid-template-columns:repeat(3,1fr); } }
     .userbox { display:flex; align-items:center; gap:10px; }
     .gate { min-height:calc(100vh - 86px); display:grid; place-items:center; padding:0 32px 48px; }
     .login { width:min(460px,100%); background:var(--panel); border:1px solid var(--line); border-radius:24px; padding:28px; box-shadow:var(--shadow); }
@@ -87,7 +96,16 @@
     </section>
   </div>
   <main id="appView" class="hidden">
+    <section class="dashboard">
+      <div class="metric"><small>沙箱总数</small><strong id="mTotal">0</strong><span>可追踪资产</span></div>
+      <div class="metric"><small>运行中</small><strong id="mRunning">0</strong><span>当前活跃会话</span></div>
+      <div class="metric"><small>待审批</small><strong id="mPending">0</strong><span>需要管理员处理</span></div>
+      <div class="metric"><small>安全拦截</small><strong id="mBlocked">0</strong><span>审计事件</span></div>
+      <div class="metric"><small>活跃用户</small><strong id="mUsers">0</strong><span>租户隔离</span></div>
+      <div class="metric"><small>系统状态</small><strong id="mHealth">正常</strong><span id="mAudit">审计流正常</span></div>
+    </section>
     <section>
+      <h2>一键启动沙箱</h2>
       <h2>一键启动沙箱</h2>
       <p>安全优先，配置只问三件事：谁来跑、能碰哪、要哪些能力。</p>
       <label>沙箱名称</label><input id="name" placeholder="例如：前端重构任务" />
@@ -96,15 +114,32 @@
       <label>安全策略</label>
       <select id="policy"></select>
       <p id="policyHint"></p>
+      <label>任务模板</label>
+      <select id="template"><option value="">不使用模板</option></select>
       <label>项目目录（绝对路径）</label><input id="workspace" placeholder="/Users/you/project" />
+      <label>任务说明</label><input id="purpose" placeholder="例如：审阅依赖漏洞，不改代码" />
       <label>凭据能力（不填密钥）</label>
       <div class="chips" id="credChips"></div>
       <label>MCP 服务（无 API Key / Password）</label>
       <div class="chips" id="mcpChips"></div>
-      <div style="display:flex;gap:8px;margin-top:16px"><button id="create">创建待审批沙箱</button><button class="ghost" id="reload">刷新</button></div>
+      <div style="display:flex;gap:8px;margin-top:16px"><button id="create">创建待审批沙箱</button></div>
     </section>
     <section>
-      <h2>运行中的隔离空间</h2>
+      <h2>隔离空间与审批队列</h2>
+      <div class="toolbar">
+        <input id="search" placeholder="搜索名称 / 工作区 / 负责人" />
+        <select id="statusFilter">
+          <option value="">全部状态</option>
+          <option value="pending_approval">待审批</option>
+          <option value="running">运行中</option>
+          <option value="paused">已暂停</option>
+          <option value="rejected">已拒绝</option>
+          <option value="terminated">已终止</option>
+        </select>
+        <select id="agentFilter"><option value="">全部 Agent</option></select>
+        <select id="policyFilter"><option value="">全部策略</option></select>
+        <button class="ghost" id="reload">刷新</button>
+      </div>
       <div id="list"></div>
       <h2>编译后的启动清单</h2>
       <pre id="manifest">选择一个沙箱查看策略编译结果</pre>
@@ -112,9 +147,36 @@
     <section>
       <h2>安全事件</h2>
       <p id="eventsHint" class="hidden">安全事件仅管理员可见。</p>
+      <div class="toolbar">
+        <input id="eventSearch" placeholder="搜索动作 / 详情" />
+        <select id="eventLevel">
+          <option value="">全部级别</option>
+          <option value="info">info</option>
+          <option value="allow">allow</option>
+          <option value="block">block</option>
+        </select>
+      </div>
       <div id="events"></div>
+      <h2>策略目录</h2>
+      <div id="policyCards"></div>
+      <div id="settingsPanel" class="hidden">
+        <h2>组织设置</h2>
+        <label>组织名称</label><input id="orgName" />
+        <label>并发上限</label><input id="maxConcurrent" type="number" min="1" max="64" />
+        <label>会话超时（分钟）</label><input id="sessionTimeoutMin" type="number" min="30" max="1440" />
+        <label>安全公告</label><input id="notice" />
+        <div style="margin-top:12px"><button id="saveSettings">保存设置</button></div>
+      </div>
     </section>
   </main>
+  <div id="drawer" class="drawer hidden">
+    <div class="drawer-card">
+      <h2>沙箱详情</h2>
+      <p id="drawerMeta"></p>
+      <pre id="drawerManifest"></pre>
+      <div style="display:flex;gap:8px;justify-content:flex-end"><button class="ghost" id="closeDrawer">关闭</button></div>
+    </div>
+  </div>
   <script>
     const TOKEN_KEY = 'safedesk.token';
     const creds = ['github-read','gitlab-read','openai-proxy','anthropic-proxy','internal-mcp'];
@@ -126,6 +188,10 @@
     let wechatTicket = '';
     let wechatTimer = null;
     let otpTimer = null;
+    let catalogData = { policies: [], agents: [], capabilities: { credentials: creds, mcpServers: mcps } };
+    let templates = [];
+    let allSandboxes = [];
+    let allEvents = [];
 
     function token() { return localStorage.getItem(TOKEN_KEY) || ''; }
     function setToken(value) { value ? localStorage.setItem(TOKEN_KEY, value) : localStorage.removeItem(TOKEN_KEY); }
@@ -163,22 +229,97 @@
       return data;
     }
     function renderEvents(events) {
-      $('events').innerHTML = (events || []).map((e) => `<div class="event"><b>${e.action}</b><small>${e.detail}<br>${e.at}</small></div>`).join('');
+      const keyword = $('eventSearch').value.trim().toLowerCase();
+      const level = $('eventLevel').value;
+      const filtered = (events || []).filter((e) => {
+        const haystack = `${e.action} ${e.detail} ${e.actor || ''}`.toLowerCase();
+        if (keyword && !haystack.includes(keyword)) return false;
+        if (level && e.level !== level) return false;
+        return true;
+      });
+      $('events').innerHTML = filtered.map((e) => `<div class="event"><b>${e.action}</b><small>${e.detail}<br>${e.at}</small></div>`).join('') || '<p>暂无匹配事件</p>';
+    }
+    function renderMetrics(overview) {
+      $('mTotal').textContent = overview.total ?? 0;
+      $('mRunning').textContent = overview.running ?? 0;
+      $('mPending').textContent = overview.pendingApproval ?? 0;
+      $('mBlocked').textContent = overview.blockedEvents ?? 0;
+      $('mUsers').textContent = overview.activeUsers ?? 0;
+      $('mHealth').textContent = overview.health === 'attention' ? '待处理' : '正常';
+      $('mAudit').textContent = overview.lastAuditAt ? `最近审计 ${overview.lastAuditAt}` : '审计流正常';
     }
     function renderList(sandboxes) {
       const admin = currentUser?.role === 'admin';
-      $('list').innerHTML = sandboxes.map((s) => `<div class="card"><strong>${s.name}</strong> · ${s.agent}${s.ownerName ? ' · ' + s.ownerName : ''}<div class="status ${s.status}">${s.status}</div><small>${s.workspace}</small><div style="margin-top:8px;display:flex;gap:8px"><button class="ghost" data-view="${s.id}">查看清单</button>${admin && s.status==='pending_approval'?'<button data-approve="'+s.id+'">审批启动</button>':''}${s.status!=='terminated'?'<button class="danger" data-stop="'+s.id+'">终止</button>':''}</div></div>`).join('') || '<p>还没有沙箱</p>';
+      const keyword = $('search').value.trim().toLowerCase();
+      const status = $('statusFilter').value;
+      const agent = $('agentFilter').value;
+      const policyId = $('policyFilter').value;
+      const filtered = sandboxes.filter((s) => {
+        const haystack = `${s.name} ${s.workspace} ${s.ownerName || ''} ${s.purpose || ''}`.toLowerCase();
+        if (keyword && !haystack.includes(keyword)) return false;
+        if (status && s.status !== status) return false;
+        if (agent && s.agent !== agent) return false;
+        if (policyId && s.policyId !== policyId) return false;
+        return true;
+      });
+      $('list').innerHTML = filtered.map((s) => {
+        const actions = [
+          `<button class="ghost" data-view="${s.id}">详情</button>`,
+          admin && s.status === 'pending_approval' ? `<button data-approve="${s.id}">审批</button>` : '',
+          admin && s.status === 'pending_approval' ? `<button class="ghost" data-reject="${s.id}">拒绝</button>` : '',
+          s.status === 'running' ? `<button class="ghost" data-pause="${s.id}">暂停</button>` : '',
+          s.status === 'paused' ? `<button data-resume="${s.id}">恢复</button>` : '',
+          s.status !== 'terminated' && s.status !== 'rejected' ? `<button class="danger" data-stop="${s.id}">终止</button>` : '',
+        ].filter(Boolean).join('');
+        return `<div class="card"><strong>${s.name}</strong> · ${s.agentLabel || s.agent}${s.ownerName ? ' · ' + s.ownerName : ''} <span class="risk ${s.risk || ''}">${s.risk || ''}</span><div class="status ${s.status}">${s.statusLabel || s.status}</div><small>${s.workspace}${s.purpose ? ' · ' + s.purpose : ''}</small><div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">${actions}</div></div>`;
+      }).join('') || '<p>没有匹配的沙箱</p>';
+    }
+    function renderCatalog(catalog) {
+      $('policyCards').innerHTML = (catalog.policies || []).map((p) => `<div class="card"><strong>${p.label}</strong> <span class="risk ${p.risk}">${p.risk}</span><small>${p.description}<br>适用：${p.suitableFor}</small></div>`).join('');
+    }
+    function applyTemplate() {
+      const tpl = templates.find((item) => item.id === $('template').value);
+      if (!tpl) return;
+      $('name').value = tpl.name;
+      $('agent').value = tpl.agent;
+      $('policy').value = tpl.policyId;
+      $('workspace').value = tpl.workspace;
+      $('purpose').value = tpl.purpose;
+      selected.credentials = new Set(tpl.credentials);
+      selected.mcpServers = new Set(tpl.mcpServers);
+      chips($('credChips'), catalogData.capabilities.credentials, 'credentials');
+      chips($('mcpChips'), catalogData.capabilities.mcpServers, 'mcpServers');
+      const current = catalogData.policies.find((p) => p.id === tpl.policyId);
+      if (current) $('policyHint').textContent = current.description;
     }
     async function bootstrap() {
       const data = await api('/api/bootstrap');
       currentUser = data.user;
+      catalogData = data.catalog || catalogData;
+      templates = data.templates || [];
+      allSandboxes = data.sandboxes || [];
+      allEvents = data.securityEvents || [];
       $('sessionHint').textContent = `${currentUser.displayName} · ${currentUser.role === 'admin' ? '管理员' : '普通用户'}`;
       $('eventsHint').classList.toggle('hidden', currentUser.role === 'admin');
+      $('settingsPanel').classList.toggle('hidden', currentUser.role !== 'admin');
       $('policy').innerHTML = data.policies.map((p) => `<option value="${p.id}">${p.label}</option>`).join('');
+      $('agentFilter').innerHTML = '<option value="">全部 Agent</option>' + data.agents.map((a) => `<option value="${a.id}">${a.label}</option>`).join('');
+      $('policyFilter').innerHTML = '<option value="">全部策略</option>' + data.policies.map((p) => `<option value="${p.id}">${p.label}</option>`).join('');
+      $('template').innerHTML = '<option value="">不使用模板</option>' + templates.map((t) => `<option value="${t.id}">${t.name}</option>`).join('');
       const current = data.policies.find((p) => p.id === $('policy').value);
       $('policyHint').textContent = current.description;
-      chips($('credChips'), creds, 'credentials'); chips($('mcpChips'), mcps, 'mcpServers');
-      renderList(data.sandboxes); renderEvents(data.securityEvents);
+      chips($('credChips'), catalogData.capabilities.credentials, 'credentials');
+      chips($('mcpChips'), catalogData.capabilities.mcpServers, 'mcpServers');
+      if (data.settings) {
+        $('orgName').value = data.settings.orgName || '';
+        $('maxConcurrent').value = data.settings.maxConcurrent || 8;
+        $('sessionTimeoutMin').value = data.settings.sessionTimeoutMin || 240;
+        $('notice').value = data.settings.notice || '';
+      }
+      renderMetrics(data.overview || {});
+      renderCatalog(catalogData);
+      renderList(allSandboxes);
+      renderEvents(allEvents);
       showApp(true);
     }
     function switchTab(tab) {
@@ -279,21 +420,46 @@
       showApp(false);
       $('sessionHint').textContent = '密钥永不进入沙箱 · 策略先于执行 · 主机凭据代理';
     };
-    $('policy').addEventListener('change', async () => { const data = await api('/api/bootstrap'); $('policyHint').textContent = data.policies.find((p) => p.id === $('policy').value).description; });
+    $('policy').addEventListener('change', () => {
+      const current = catalogData.policies.find((p) => p.id === $('policy').value);
+      $('policyHint').textContent = current ? current.description : '';
+    });
+    $('template').addEventListener('change', applyTemplate);
+    ['search','statusFilter','agentFilter','policyFilter'].forEach((id) => $(id).addEventListener('input', () => renderList(allSandboxes)));
+    ['search','statusFilter','agentFilter','policyFilter'].forEach((id) => $(id).addEventListener('change', () => renderList(allSandboxes)));
+    ['eventSearch','eventLevel'].forEach((id) => $(id).addEventListener('input', () => renderEvents(allEvents)));
+    ['eventSearch','eventLevel'].forEach((id) => $(id).addEventListener('change', () => renderEvents(allEvents)));
     $('create').onclick = async () => {
       try {
-        const created = await api('/api/sandboxes', { method:'POST', body: JSON.stringify({ name:$('name').value, agent:$('agent').value, policyId:$('policy').value, workspace:$('workspace').value, credentials:[...selected.credentials], mcpServers:[...selected.mcpServers] }) });
+        const created = await api('/api/sandboxes', { method:'POST', body: JSON.stringify({ name:$('name').value, agent:$('agent').value, policyId:$('policy').value, workspace:$('workspace').value, purpose:$('purpose').value, credentials:[...selected.credentials], mcpServers:[...selected.mcpServers] }) });
         $('manifest').textContent = JSON.stringify(created.manifest, null, 2); await bootstrap();
       } catch (error) { alert(error.message); }
     };
     $('reload').onclick = bootstrap;
+    $('saveSettings').onclick = async () => {
+      try {
+        await api('/api/settings', { method:'POST', body: JSON.stringify({ orgName:$('orgName').value, maxConcurrent:Number($('maxConcurrent').value), sessionTimeoutMin:Number($('sessionTimeoutMin').value), notice:$('notice').value }) });
+        await bootstrap();
+      } catch (error) { alert(error.message); }
+    };
+    $('closeDrawer').onclick = () => $('drawer').classList.add('hidden');
     document.body.addEventListener('click', async (e) => {
       const approve = e.target.dataset.approve, stop = e.target.dataset.stop, view = e.target.dataset.view;
+      const reject = e.target.dataset.reject, pause = e.target.dataset.pause, resume = e.target.dataset.resume;
       try {
         if (approve) await api(`/api/sandboxes/${approve}/approve`, { method:'POST' });
+        if (reject) await api(`/api/sandboxes/${reject}/reject`, { method:'POST', body: JSON.stringify({ reason: prompt('拒绝原因') || '不符合安全策略' }) });
+        if (pause) await api(`/api/sandboxes/${pause}/pause`, { method:'POST' });
+        if (resume) await api(`/api/sandboxes/${resume}/resume`, { method:'POST' });
         if (stop) await api(`/api/sandboxes/${stop}/terminate`, { method:'POST' });
-        if (view) $('manifest').textContent = JSON.stringify((await api(`/api/sandboxes/${view}/manifest`)).manifest, null, 2);
-        if (approve || stop) await bootstrap();
+        if (view) {
+          const detail = await api(`/api/sandboxes/${view}/manifest`);
+          $('manifest').textContent = JSON.stringify(detail.manifest, null, 2);
+          $('drawerMeta').textContent = view;
+          $('drawerManifest').textContent = JSON.stringify(detail.manifest, null, 2);
+          $('drawer').classList.remove('hidden');
+        }
+        if (approve || stop || reject || pause || resume) await bootstrap();
       } catch (error) { alert(error.message); }
     });
     async function restore() {

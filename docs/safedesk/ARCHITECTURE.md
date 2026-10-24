@@ -54,5 +54,6 @@ SafeDesk 在隔离底座上增加企业层：
 4. 启动前必须审批，终止后短期会话凭据立即失效。
 5. 控制面必须登录：手机号验证码、微信扫码、管理员账户。
 6. 普通用户只能看到自己的沙箱；审批与安全事件仅管理员可见。
+7. 企业工作台包含总览指标、任务模板、搜索筛选、审批拒绝、暂停恢复和组织设置。
 
-The control plane requires sign-in. Phone OTP, WeChat QR, and an admin account are supported. Regular users only see their own sandboxes; approval and audit events stay with admins.
+The control plane requires sign-in. Phone OTP, WeChat QR, and an admin account are supported. Regular users only see their own sandboxes; approval and audit events stay with admins. The console also includes overview metrics, task templates, search filters, reject/pause/resume, and organization settings.

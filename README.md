@@ -48,8 +48,8 @@ PORT=8022 HOST=0.0.0.0 node server.mjs
 
 ### 演示路径
 
-1. 登录控制台。
-2. 选择 Claude Code、Codex 或 DSH。
+1. 登录控制台，查看总览指标、待审批数量和安全拦截。
+2. 选择 Claude Code、Codex 或 DSH，或使用任务模板。
 3. 选择策略：标准研发、只读审阅或受限构建。
 4. 填写项目绝对路径，勾选凭据能力和 MCP 服务，不要填写任何密钥。
 5. 创建待审批沙箱，查看编译后的启动清单。
@@ -102,8 +102,8 @@ Sign-in methods: phone OTP, WeChat QR, and an admin account. Default admin is `a
 
 ### Demo path
 
-1. Sign in to the console.
-2. Choose Claude Code, Codex, or DSH.
+1. Sign in to the console and check overview metrics, pending approvals, and blocked events.
+2. Choose Claude Code, Codex, or DSH, or apply a task template.
 3. Choose a policy: Standard Development, Read-only Review, or Restricted Build.
 4. Enter an absolute project path and select credential/MCP capabilities. Do not paste secrets.
 5. Create a pending sandbox and inspect the compiled launch plan.

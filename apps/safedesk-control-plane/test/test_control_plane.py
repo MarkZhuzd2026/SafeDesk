@@ -154,6 +154,9 @@ class ControlPlaneApiTest(unittest.TestCase):
         self.assertEqual(sorted(p["id"] for p in data["policies"]), ["balanced", "build", "review"])
         self.assertEqual(sorted(a["id"] for a in data["agents"]), ["claude-code", "codex", "dsh"])
         self.assertTrue(any(e["level"] == "block" for e in data["securityEvents"]))
+        self.assertIn("overview", data)
+        self.assertEqual(len(data["catalog"]["policies"]), 3)
+        self.assertGreaterEqual(len(data["templates"]), 3)
 
     def test_create_pending_sandbox_without_exposing_secrets(self):
         status, data = self.create_sandbox()
