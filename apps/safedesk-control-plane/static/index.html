@@ -31,6 +31,9 @@
     .toolbar button { padding:8px 11px; }
     .drawer { position:fixed; inset:0; background:rgba(15,23,40,.35); display:grid; place-items:center; z-index:10; }
     .drawer-card { width:min(720px,calc(100% - 32px)); max-height:85vh; overflow:auto; background:#fff; border-radius:20px; padding:20px; box-shadow:0 24px 80px rgba(15,23,40,.25); }
+    .password-gate { position:fixed; inset:0; background:rgba(15,23,40,.55); display:grid; place-items:center; z-index:20; }
+    .password-card { width:min(420px,calc(100% - 32px)); background:#fff; border-radius:20px; padding:24px; box-shadow:0 24px 80px rgba(15,23,40,.28); }
+    .password-card h2 { margin-bottom:8px; }
     .risk { font-size:11px; padding:3px 7px; border-radius:999px; background:#eef3fb; color:var(--muted); } .risk.high,.risk.高风险 { background:#ffeded;color:#c62828; } .risk.中风险 { background:#fff5df;color:#a76500; } .risk.低风险 { background:#e9f8ef;color:#0f7c47; }
     @media (max-width:1180px) { .dashboard { grid-template-columns:repeat(3,1fr); } }
     .userbox { display:flex; align-items:center; gap:10px; }
@@ -184,6 +187,17 @@
       <div style="display:flex;gap:8px;justify-content:flex-end"><button class="ghost" id="closeDrawer">关闭</button></div>
     </div>
   </div>
+  <div id="passwordGate" class="password-gate hidden">
+    <div class="password-card">
+      <h2>请修改默认密码</h2>
+      <p>管理员仍在使用初始密码。改密后才能继续使用控制台，重启服务也不会恢复默认值。</p>
+      <label>当前密码</label><input id="gateCurrentPassword" type="password" autocomplete="current-password" />
+      <label>新密码</label><input id="gateNewPassword" type="password" autocomplete="new-password" placeholder="至少 8 位，不要使用默认密码" />
+      <label>确认新密码</label><input id="gateConfirmPassword" type="password" autocomplete="new-password" />
+      <p id="gatePasswordError" class="field-error"></p>
+      <div style="margin-top:12px"><button id="gateChangePassword">更新密码并继续</button></div>
+    </div>
+  </div>
   <script>
     const TOKEN_KEY = 'safedesk.token';
     const creds = ['github-read','gitlab-read','openai-proxy','anthropic-proxy','internal-mcp'];
@@ -333,6 +347,28 @@
       renderList(allSandboxes);
       renderEvents(allEvents);
       showApp(true);
+      $('passwordGate').classList.toggle('hidden', !currentUser.mustChangePassword);
+      if (currentUser.mustChangePassword) {
+        $('gateCurrentPassword').value = '';
+        $('gateNewPassword').value = '';
+        $('gateConfirmPassword').value = '';
+        $('gatePasswordError').textContent = '';
+        $('gateCurrentPassword').focus();
+      }
+    }
+    async function submitPasswordChange(currentPassword, newPassword, confirmPassword, errorEl) {
+      if (newPassword !== confirmPassword) {
+        throw new Error('两次输入的新密码不一致');
+      }
+      await api('/api/auth/password', { method:'POST', body: JSON.stringify({ currentPassword, newPassword }) });
+      $('currentPassword').value = '';
+      $('newPassword').value = '';
+      $('confirmPassword').value = '';
+      $('gateCurrentPassword').value = '';
+      $('gateNewPassword').value = '';
+      $('gateConfirmPassword').value = '';
+      if (errorEl) errorEl.textContent = '';
+      await bootstrap();
     }
     function switchTab(tab) {
       document.querySelectorAll('.tabs button').forEach((button) => button.classList.toggle('on', button.dataset.tab === tab));
@@ -430,6 +466,7 @@
       setToken('');
       currentUser = null;
       showApp(false);
+      $('passwordGate').classList.add('hidden');
       $('sessionHint').textContent = '密钥永不进入沙箱 · 策略先于执行 · 主机凭据代理';
     };
     $('policy').addEventListener('change', () => {
@@ -455,18 +492,16 @@
       } catch (error) { alert(error.message); }
     };
     $('changePassword').onclick = async () => {
-      if ($('newPassword').value !== $('confirmPassword').value) {
-        alert('两次输入的新密码不一致');
-        return;
-      }
       try {
-        await api('/api/auth/password', { method:'POST', body: JSON.stringify({ currentPassword:$('currentPassword').value, newPassword:$('newPassword').value }) });
-        $('currentPassword').value = '';
-        $('newPassword').value = '';
-        $('confirmPassword').value = '';
-        await bootstrap();
+        await submitPasswordChange($('currentPassword').value, $('newPassword').value, $('confirmPassword').value);
         alert('管理员密码已更新');
       } catch (error) { alert(error.message); }
+    };
+    $('gateChangePassword').onclick = async () => {
+      $('gatePasswordError').textContent = '';
+      try {
+        await submitPasswordChange($('gateCurrentPassword').value, $('gateNewPassword').value, $('gateConfirmPassword').value, $('gatePasswordError'));
+      } catch (error) { $('gatePasswordError').textContent = error.message; }
     };
     $('closeDrawer').onclick = () => $('drawer').classList.add('hidden');
     document.body.addEventListener('click', async (e) => {
