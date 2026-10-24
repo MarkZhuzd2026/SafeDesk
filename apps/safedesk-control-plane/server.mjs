@@ -104,6 +104,10 @@ async function api(req, res, url) {
     await auth.ready;
     return json(res, 200, await auth.pollWechat(queryTicket(url)));
   }
+  if (req.method === 'GET' && pathname === '/api/auth/wecom/poll') {
+    await auth.ready;
+    return json(res, 200, await auth.pollWecom(queryTicket(url)));
+  }
   if (req.method === 'POST' && pathname === '/api/auth/phone/send') {
     try {
       const input = await readBody(req);
@@ -130,6 +134,19 @@ async function api(req, res, url) {
       const input = await readBody(req);
       await auth.ready;
       return json(res, 200, await auth.confirmWechat(String(input.ticket || '').trim()));
+    } catch (error) {
+      return json(res, error.statusCode ?? 400, { error: error.message });
+    }
+  }
+  if (req.method === 'POST' && pathname === '/api/auth/wecom/start') {
+    await auth.ready;
+    return json(res, 200, auth.startWecom());
+  }
+  if (req.method === 'POST' && pathname === '/api/auth/wecom/confirm') {
+    try {
+      const input = await readBody(req);
+      await auth.ready;
+      return json(res, 200, await auth.confirmWecom(String(input.ticket || '').trim()));
     } catch (error) {
       return json(res, error.statusCode ?? 400, { error: error.message });
     }

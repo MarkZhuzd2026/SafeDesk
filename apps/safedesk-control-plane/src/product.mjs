@@ -15,6 +15,7 @@ export const defaultSettings = {
   sessionTimeoutMin: 240,
   allowPhoneLogin: true,
   allowWechatLogin: true,
+  allowWecomLogin: true,
   allowAdminLogin: true,
   retainAuditDays: 30,
   notice: '密钥永不进入沙箱。所有外联必须经主机凭据代理。',

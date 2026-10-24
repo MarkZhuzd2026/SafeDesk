@@ -237,6 +237,88 @@ class ControlPlaneApiTest(unittest.TestCase):
         self.assertIn("创建待审批沙箱", actions)
         self.assertLessEqual(len(body["events"]), 40)
 
+    def test_created_sandbox_owned_by_local_dev(self):
+        _, data = self.create_sandbox(name="owned")
+        self.assertEqual(data["sandbox"]["ownerId"], "local-dev")
+        self.assertEqual(data["sandbox"]["statusLabel"], "待审批")
+        self.assertEqual(data["sandbox"]["risk"], "低风险")
+
+    def test_purpose_and_notes_truncated(self):
+        _, data = self.create_sandbox(name="limits", purpose="p" * 200, notes="n" * 300)
+        self.assertEqual(len(data["sandbox"]["purpose"]), 160)
+        self.assertEqual(len(data["sandbox"]["notes"]), 240)
+
+    def test_pause_resume_require_running(self):
+        _, data = self.create_sandbox(name="pause-flow")
+        sandbox_id = data["sandbox"]["id"]
+        status, _ = self.request("POST", f"/api/sandboxes/{sandbox_id}/pause")
+        self.assertEqual(status, 409)
+        status, _ = self.request("POST", f"/api/sandboxes/{sandbox_id}/resume")
+        self.assertEqual(status, 409)
+        self.request("POST", f"/api/sandboxes/{sandbox_id}/approve")
+        _, paused = self.request("POST", f"/api/sandboxes/{sandbox_id}/pause")
+        self.assertEqual(paused["sandbox"]["status"], "paused")
+        _, resumed = self.request("POST", f"/api/sandboxes/{sandbox_id}/resume")
+        self.assertEqual(resumed["sandbox"]["status"], "running")
+
+    def test_reject_records_reason(self):
+        _, data = self.create_sandbox(name="reject-flow")
+        status, rejected = self.request("POST", f"/api/sandboxes/{data['sandbox']['id']}/reject", {"reason": "超出范围"})
+        self.assertEqual(status, 200)
+        self.assertEqual(rejected["sandbox"]["status"], "rejected")
+        self.assertEqual(rejected["sandbox"]["rejectReason"], "超出范围")
+        status, _ = self.request("POST", f"/api/sandboxes/{data['sandbox']['id']}/approve")
+        self.assertEqual(status, 409)
+
+    def test_reject_default_reason(self):
+        _, data = self.create_sandbox(name="reject-default")
+        _, rejected = self.request("POST", f"/api/sandboxes/{data['sandbox']['id']}/reject", {})
+        self.assertEqual(rejected["sandbox"]["rejectReason"], "不符合安全策略")
+
+    def test_catalog_and_templates(self):
+        status, catalog = self.request("GET", "/api/catalog")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(catalog["policies"]), 3)
+        status, templates = self.request("GET", "/api/templates")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(templates["templates"]), 3)
+
+    def test_overview_counts_created_sandboxes(self):
+        self.create_sandbox(name="overview-box")
+        status, body = self.request("GET", "/api/overview")
+        self.assertEqual(status, 200)
+        self.assertGreaterEqual(body["overview"]["total"], 1)
+        self.assertEqual(body["overview"]["role"], "admin")
+
+    def test_sandbox_filters(self):
+        _, data = self.create_sandbox(name="filter-target", purpose="专门给筛选用")
+        _, filtered = self.request("GET", "/api/sandboxes?status=pending_approval&q=%E7%AD%9B%E9%80%89")
+        self.assertTrue(any(item["id"] == data["sandbox"]["id"] for item in filtered["sandboxes"]))
+        _, none = self.request("GET", "/api/sandboxes?status=terminated&q=%E7%AD%9B%E9%80%89")
+        self.assertFalse(any(item["id"] == data["sandbox"]["id"] for item in none["sandboxes"]))
+
+    def test_events_filter_by_level(self):
+        _, body = self.request("GET", "/api/events?level=block")
+        self.assertGreaterEqual(len(body["events"]), 1)
+        self.assertTrue(all(item["level"] == "block" for item in body["events"]))
+
+    def test_activity_mentions_sandbox_name(self):
+        _, data = self.create_sandbox(name="activity-box")
+        _, body = self.request("GET", f"/api/sandboxes/{data['sandbox']['id']}/activity")
+        self.assertTrue(any("activity-box" in str(item.get("detail", "")) for item in body["events"]))
+
+    def test_settings_persist(self):
+        status, body = self.request("POST", "/api/settings", {"orgName": "测试组织", "maxConcurrent": 3})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["settings"]["orgName"], "测试组织")
+        _, loaded = self.request("GET", "/api/settings")
+        self.assertEqual(loaded["settings"]["orgName"], "测试组织")
+
+    def test_unknown_api_path(self):
+        status, body = self.request("GET", "/api/does-not-exist")
+        self.assertEqual(status, 404)
+        self.assertIn("Not found", body["error"])
+
     def test_static_root_does_not_leak_source_files(self):
         # GET / serves static HTML, not JSON — read it raw instead of via request()
         with OPENER.open(self.base + "/", timeout=5) as response:

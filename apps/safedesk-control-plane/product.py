@@ -18,6 +18,7 @@ DEFAULT_SETTINGS = {
     "sessionTimeoutMin": 240,
     "allowPhoneLogin": True,
     "allowWechatLogin": True,
+    "allowWecomLogin": True,
     "allowAdminLogin": True,
     "retainAuditDays": 30,
     "notice": "密钥永不进入沙箱。所有外联必须经主机凭据代理。",

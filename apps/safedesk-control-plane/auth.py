@@ -1,6 +1,6 @@
 """Local authentication for SafeDesk when cloud login is not bound.
 
-Supports phone OTP, a local WeChat QR ticket, and a seeded admin account.
+Supports phone OTP, WeChat QR, WeCom QR, and a seeded admin account.
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ SESSION_DAYS = 7
 OTP_TTL_SECONDS = 300
 OTP_RESEND_SECONDS = 60
 WECHAT_TTL_SECONDS = 180
+WECOM_TTL_SECONDS = 180
 DEFAULT_ADMIN_USERNAME = "admin"
 DEFAULT_ADMIN_PASSWORD = "SafeDesk@Admin"
 
@@ -41,6 +42,7 @@ class AuthStore:
         self.sessions_file = data_dir / "sessions.json"
         self.otp: dict[str, dict] = {}
         self.wechat: dict[str, dict] = {}
+        self.wecom: dict[str, dict] = {}
         self.demo = os.getenv("SAFEDESK_DEMO", "1") != "0"
         self.otp_echo = os.getenv("SAFEDESK_OTP_ECHO", "0") == "1" or self.demo
         self.admin_username = os.getenv("SAFEDESK_ADMIN_USERNAME", DEFAULT_ADMIN_USERNAME)
@@ -55,10 +57,12 @@ class AuthStore:
 
     def public_config(self) -> dict:
         return {
-            "methods": ["phone", "wechat", "admin"],
+            "methods": ["phone", "wechat", "wecom", "admin"],
             "wechatMode": "local-qr",
+            "wecomMode": "local-qr",
             "demo": self.demo,
             "adminUsername": self.admin_username,
+            "wecomReady": True,
         }
 
     def _load(self, path: Path, default):
@@ -253,6 +257,51 @@ class AuthStore:
             "provider": "wechat",
             "wechatOpenId": openid,
             "displayName": "微信用户",
+        })
+        session = self.create_session(user)
+        record["status"] = "confirmed"
+        record["session"] = session
+        return {"ok": True}
+
+    def start_wecom(self) -> dict:
+        ticket = secrets.token_urlsafe(16)
+        self.wecom[ticket] = {
+            "status": "pending",
+            "createdAt": iso_now(),
+            "expiresAt": (datetime.now(timezone.utc) + timedelta(seconds=WECOM_TTL_SECONDS)).isoformat().replace("+00:00", "Z"),
+        }
+        return {
+            "ticket": ticket,
+            "expiresIn": WECOM_TTL_SECONDS,
+            "confirmHint": "企业微信演示：同一浏览器确认本地工单后进入企业身份。不读取个人微信或企业通讯录。",
+        }
+
+    def poll_wecom(self, ticket: str) -> dict:
+        record = self.wecom.get(ticket)
+        if not record:
+            return {"status": "expired"}
+        if _parse_iso(record["expiresAt"]) <= datetime.now(timezone.utc):
+            self.wecom.pop(ticket, None)
+            return {"status": "expired"}
+        if record["status"] != "confirmed":
+            return {"status": "pending"}
+        session = record.get("session")
+        self.wecom.pop(ticket, None)
+        return {"status": "confirmed", **session}
+
+    def confirm_wecom(self, ticket: str) -> dict:
+        record = self.wecom.get(ticket)
+        if not record:
+            raise ValueError("企业微信二维码已失效，请刷新后重试")
+        if _parse_iso(record["expiresAt"]) <= datetime.now(timezone.utc):
+            self.wecom.pop(ticket, None)
+            raise ValueError("企业微信二维码已过期，请刷新后重试")
+        member = f"member-{ticket[:8]}"
+        user = self._upsert_user({
+            "id": f"wecom-{member}",
+            "role": "user",
+            "provider": "wecom",
+            "displayName": "企业微信用户",
         })
         session = self.create_session(user)
         record["status"] = "confirmed"

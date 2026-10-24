@@ -8,6 +8,7 @@ const SESSION_DAYS = 7;
 const OTP_TTL_SECONDS = 300;
 const OTP_RESEND_SECONDS = 60;
 const WECHAT_TTL_SECONDS = 180;
+const WECOM_TTL_SECONDS = 180;
 const DEFAULT_ADMIN_USERNAME = 'admin';
 const DEFAULT_ADMIN_PASSWORD = 'SafeDesk@Admin';
 
@@ -26,6 +27,7 @@ export class AuthStore {
     this.sessionsFile = join(dataDir, 'sessions.json');
     this.otp = new Map();
     this.wechat = new Map();
+    this.wecom = new Map();
     this.demo = process.env.SAFEDESK_DEMO !== '0';
     this.otpEcho = process.env.SAFEDESK_OTP_ECHO === '1' || this.demo;
     this.adminUsername = process.env.SAFEDESK_ADMIN_USERNAME || DEFAULT_ADMIN_USERNAME;
@@ -36,10 +38,12 @@ export class AuthStore {
 
   publicConfig() {
     return {
-      methods: ['phone', 'wechat', 'admin'],
+      methods: ['phone', 'wechat', 'wecom', 'admin'],
       wechatMode: 'local-qr',
+      wecomMode: 'local-qr',
       demo: this.demo,
       adminUsername: this.adminUsername,
+      wecomReady: true,
     };
   }
 
@@ -242,6 +246,52 @@ export class AuthStore {
       provider: 'wechat',
       wechatOpenId: openid,
       displayName: '微信用户',
+    });
+    record.status = 'confirmed';
+    record.session = await this.createSession(user);
+    return { ok: true };
+  }
+
+  startWecom() {
+    const ticket = randomBytes(12).toString('base64url');
+    this.wecom.set(ticket, {
+      status: 'pending',
+      createdAt: isoNow(),
+      expiresAt: new Date(Date.now() + WECOM_TTL_SECONDS * 1000).toISOString(),
+    });
+    return {
+      ticket,
+      expiresIn: WECOM_TTL_SECONDS,
+      confirmHint: '企业微信演示：同一浏览器确认本地工单后进入企业身份。不读取个人微信或企业通讯录。',
+    };
+  }
+
+  async pollWecom(ticket) {
+    const record = this.wecom.get(ticket);
+    if (!record) return { status: 'expired' };
+    if (parseIso(record.expiresAt) <= new Date()) {
+      this.wecom.delete(ticket);
+      return { status: 'expired' };
+    }
+    if (record.status !== 'confirmed') return { status: 'pending' };
+    const session = record.session;
+    this.wecom.delete(ticket);
+    return { status: 'confirmed', ...session };
+  }
+
+  async confirmWecom(ticket) {
+    const record = this.wecom.get(ticket);
+    if (!record) throw Object.assign(new Error('企业微信二维码已失效，请刷新后重试'), { statusCode: 400 });
+    if (parseIso(record.expiresAt) <= new Date()) {
+      this.wecom.delete(ticket);
+      throw Object.assign(new Error('企业微信二维码已过期，请刷新后重试'), { statusCode: 400 });
+    }
+    const member = `member-${ticket.slice(0, 8)}`;
+    const user = await this.upsertUser({
+      id: `wecom-${member}`,
+      role: 'user',
+      provider: 'wecom',
+      displayName: '企业微信用户',
     });
     record.status = 'confirmed';
     record.session = await this.createSession(user);

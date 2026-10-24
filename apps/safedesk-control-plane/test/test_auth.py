@@ -157,6 +157,91 @@ class AuthApiTest(unittest.TestCase):
         self.assertEqual(settings["settings"]["orgName"], "SafeDesk 演示中心")
         self.assertEqual(settings["settings"]["maxConcurrent"], 12)
 
+    def test_auth_config_methods(self):
+        status, data = self.request("GET", "/api/auth/config")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["methods"], ["phone", "wechat", "wecom", "admin"])
+        self.assertEqual(data["wechatMode"], "local-qr")
+        self.assertEqual(data["wecomMode"], "local-qr")
+
+    def test_admin_me_endpoint(self):
+        _, login = self.request("POST", "/api/auth/admin/login", {"username": "admin", "password": "SafeDesk@Admin"})
+        status, me = self.request("GET", "/api/auth/me", token=login["token"])
+        self.assertEqual(status, 200)
+        self.assertEqual(me["user"]["role"], "admin")
+        self.assertTrue(me["authEnabled"])
+
+    def test_logout_invalidates_token(self):
+        _, login = self.request("POST", "/api/auth/admin/login", {"username": "admin", "password": "SafeDesk@Admin"})
+        status, _ = self.request("POST", "/api/auth/logout", token=login["token"])
+        self.assertEqual(status, 200)
+        status, _ = self.request("GET", "/api/auth/me", token=login["token"])
+        self.assertEqual(status, 401)
+
+    def test_user_cannot_update_settings(self):
+        _, sent = self.request("POST", "/api/auth/phone/send", {"phone": "13700000001"})
+        _, verify = self.request("POST", "/api/auth/phone/verify", {"phone": "13700000001", "token": sent["demoCode"]})
+        status, _ = self.request("POST", "/api/settings", {"orgName": "hijack"}, verify["token"])
+        self.assertEqual(status, 403)
+
+    def test_user_cannot_reject(self):
+        _, sent = self.request("POST", "/api/auth/phone/send", {"phone": "13700000002"})
+        _, verify = self.request("POST", "/api/auth/phone/verify", {"phone": "13700000002", "token": sent["demoCode"]})
+        _, created = self.request("POST", "/api/sandboxes", {
+            "name": "no-reject",
+            "agent": "codex",
+            "policyId": "review",
+            "workspace": "/tmp/no-reject",
+        }, verify["token"])
+        status, _ = self.request("POST", f"/api/sandboxes/{created['sandbox']['id']}/reject", {"reason": "x"}, verify["token"])
+        self.assertEqual(status, 403)
+
+    def test_user_concurrent_cap(self):
+        _, login = self.request("POST", "/api/auth/admin/login", {"username": "admin", "password": "SafeDesk@Admin"})
+        self.request("POST", "/api/settings", {"maxConcurrent": 1}, login["token"])
+        _, sent = self.request("POST", "/api/auth/phone/send", {"phone": "13700000003"})
+        _, verify = self.request("POST", "/api/auth/phone/verify", {"phone": "13700000003", "token": sent["demoCode"]})
+        status, _ = self.request("POST", "/api/sandboxes", {
+            "name": "cap-one",
+            "agent": "codex",
+            "policyId": "review",
+            "workspace": "/tmp/cap-one",
+        }, verify["token"])
+        self.assertEqual(status, 201)
+        status, _ = self.request("POST", "/api/sandboxes", {
+            "name": "cap-two",
+            "agent": "codex",
+            "policyId": "review",
+            "workspace": "/tmp/cap-two",
+        }, verify["token"])
+        self.assertEqual(status, 409)
+
+    def test_admin_can_see_other_users_sandbox(self):
+        _, sent = self.request("POST", "/api/auth/phone/send", {"phone": "13700000004"})
+        _, verify = self.request("POST", "/api/auth/phone/verify", {"phone": "13700000004", "token": sent["demoCode"]})
+        _, created = self.request("POST", "/api/sandboxes", {
+            "name": "visible-to-admin",
+            "agent": "dsh",
+            "policyId": "balanced",
+            "workspace": "/tmp/visible",
+        }, verify["token"])
+        _, login = self.request("POST", "/api/auth/admin/login", {"username": "admin", "password": "SafeDesk@Admin"})
+        _, listed = self.request("GET", "/api/sandboxes", token=login["token"])
+        self.assertTrue(any(item["id"] == created["sandbox"]["id"] for item in listed["sandboxes"]))
+
+    def test_wrong_admin_password(self):
+        status, _ = self.request("POST", "/api/auth/admin/login", {"username": "admin", "password": "nope"})
+        self.assertEqual(status, 400)
+
+    def test_wecom_qr_becomes_user_session(self):
+        _, started = self.request("POST", "/api/auth/wecom/start")
+        status, _ = self.request("POST", "/api/auth/wecom/confirm", {"ticket": started["ticket"]})
+        self.assertEqual(status, 200)
+        _, polled = self.request("GET", f"/api/auth/wecom/poll?ticket={started['ticket']}")
+        self.assertEqual(polled["status"], "confirmed")
+        self.assertEqual(polled["user"]["provider"], "wecom")
+        self.assertEqual(polled["user"]["role"], "user")
+
     def test_wechat_qr_becomes_user_session(self):
         _, started = self.request("POST", "/api/auth/wechat/start")
         status, _ = self.request("POST", "/api/auth/wechat/confirm", {"ticket": started["ticket"]})

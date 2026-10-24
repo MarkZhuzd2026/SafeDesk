@@ -159,6 +159,97 @@ test('admin can reject, pause, resume and filter sandboxes', async () => {
   assert.equal(settings.data.settings.maxConcurrent, 12);
 });
 
+test('auth config advertises the three login methods', async () => {
+  const { response, data } = await request('/api/auth/config');
+  assert.equal(response.status, 200);
+  assert.deepEqual(data.methods, ['phone', 'wechat', 'wecom', 'admin']);
+  assert.equal(data.wechatMode, 'local-qr');
+  assert.equal(data.wecomMode, 'local-qr');
+});
+
+test('admin me endpoint returns the signed-in user', async () => {
+  const login = await request('/api/auth/admin/login', { method: 'POST', body: { username: 'admin', password: 'SafeDesk@Admin' } });
+  const me = await request('/api/auth/me', { token: login.data.token });
+  assert.equal(me.response.status, 200);
+  assert.equal(me.data.user.role, 'admin');
+  assert.equal(me.data.authEnabled, true);
+});
+
+test('logout invalidates the bearer token', async () => {
+  const login = await request('/api/auth/admin/login', { method: 'POST', body: { username: 'admin', password: 'SafeDesk@Admin' } });
+  const out = await request('/api/auth/logout', { method: 'POST', token: login.data.token });
+  assert.equal(out.response.status, 200);
+  const me = await request('/api/auth/me', { token: login.data.token });
+  assert.equal(me.response.status, 401);
+});
+
+test('regular user cannot update organization settings', async () => {
+  const send = await request('/api/auth/phone/send', { method: 'POST', body: { phone: '13700000001' } });
+  const verify = await request('/api/auth/phone/verify', { method: 'POST', body: { phone: '13700000001', token: send.data.demoCode } });
+  const forbidden = await request('/api/settings', { method: 'POST', token: verify.data.token, body: { orgName: 'hijack' } });
+  assert.equal(forbidden.response.status, 403);
+});
+
+test('regular user cannot reject a sandbox', async () => {
+  const send = await request('/api/auth/phone/send', { method: 'POST', body: { phone: '13700000002' } });
+  const verify = await request('/api/auth/phone/verify', { method: 'POST', body: { phone: '13700000002', token: send.data.demoCode } });
+  const created = await request('/api/sandboxes', {
+    method: 'POST',
+    token: verify.data.token,
+    body: { name: 'no-reject', agent: 'codex', policyId: 'review', workspace: '/tmp/no-reject' },
+  });
+  const forbidden = await request(`/api/sandboxes/${created.data.sandbox.id}/reject`, { method: 'POST', token: verify.data.token, body: { reason: 'x' } });
+  assert.equal(forbidden.response.status, 403);
+});
+
+test('user concurrent sandbox cap returns 409', async () => {
+  const login = await request('/api/auth/admin/login', { method: 'POST', body: { username: 'admin', password: 'SafeDesk@Admin' } });
+  await request('/api/settings', { method: 'POST', token: login.data.token, body: { maxConcurrent: 1 } });
+  const send = await request('/api/auth/phone/send', { method: 'POST', body: { phone: '13700000003' } });
+  const verify = await request('/api/auth/phone/verify', { method: 'POST', body: { phone: '13700000003', token: send.data.demoCode } });
+  const first = await request('/api/sandboxes', {
+    method: 'POST',
+    token: verify.data.token,
+    body: { name: 'cap-one', agent: 'codex', policyId: 'review', workspace: '/tmp/cap-one' },
+  });
+  assert.equal(first.response.status, 201);
+  const second = await request('/api/sandboxes', {
+    method: 'POST',
+    token: verify.data.token,
+    body: { name: 'cap-two', agent: 'codex', policyId: 'review', workspace: '/tmp/cap-two' },
+  });
+  assert.equal(second.response.status, 409);
+});
+
+test('admin can see another users sandbox', async () => {
+  const send = await request('/api/auth/phone/send', { method: 'POST', body: { phone: '13700000004' } });
+  const verify = await request('/api/auth/phone/verify', { method: 'POST', body: { phone: '13700000004', token: send.data.demoCode } });
+  const created = await request('/api/sandboxes', {
+    method: 'POST',
+    token: verify.data.token,
+    body: { name: 'visible-to-admin', agent: 'dsh', policyId: 'balanced', workspace: '/tmp/visible' },
+  });
+  const login = await request('/api/auth/admin/login', { method: 'POST', body: { username: 'admin', password: 'SafeDesk@Admin' } });
+  const list = await request('/api/sandboxes', { token: login.data.token });
+  assert.ok(list.data.sandboxes.some((item) => item.id === created.data.sandbox.id));
+});
+
+test('wrong admin password is rejected', async () => {
+  const { response } = await request('/api/auth/admin/login', { method: 'POST', body: { username: 'admin', password: 'nope' } });
+  assert.equal(response.status, 400);
+});
+
+test('wecom QR ticket can be confirmed into a user session', async () => {
+  const started = await request('/api/auth/wecom/start', { method: 'POST' });
+  assert.equal(started.response.status, 200);
+  const confirmed = await request('/api/auth/wecom/confirm', { method: 'POST', body: { ticket: started.data.ticket } });
+  assert.equal(confirmed.response.status, 200);
+  const polled = await request(`/api/auth/wecom/poll?ticket=${started.data.ticket}`);
+  assert.equal(polled.data.status, 'confirmed');
+  assert.equal(polled.data.user.provider, 'wecom');
+  assert.equal(polled.data.user.role, 'user');
+});
+
 test('wechat QR ticket can be confirmed into a user session', async () => {
   const started = await request('/api/auth/wechat/start', { method: 'POST' });
   assert.equal(started.response.status, 200);
