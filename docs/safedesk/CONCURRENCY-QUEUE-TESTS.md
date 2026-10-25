@@ -55,7 +55,8 @@ node --test apps/safedesk-control-plane/test/*.test.mjs
 | 双实现 HTTP 合约 | 20 项全部通过，22.194 秒 |
 | Python discover（含双实现 HTTP 合约和 E2E） | 最终 273 项全部通过，86.757 秒 |
 | Node 本次涉及模块专项回归 | 135 项全部通过，6.079 秒 |
-| Node 全套 | 225 项通过，2 个测试文件失败；详情如下 |
+| Node 全套（初次） | 225 项通过，2 个测试文件失败；详情如下 |
+| Node 全套（CI 排查修复后） | 225 项通过，0 失败，5.977 秒 |
 | Python py_compile / Node --check / 控制台内嵌脚本语法 | 通过 |
 | git diff --check | 通过 |
 | make lint | 未完成：本机缺少 rustc、yamlfmt，默认 PATH 也无 node；在 lint-yamlfmt 阶段退出 |
@@ -67,7 +68,9 @@ Node 全套的 `broker.test.mjs`、`travelers.test.mjs` 断言均通过，但部
 异步初始化完成前删除临时目录，随后触发 ENOENT/unhandledRejection，使这两个
 测试文件失败。使用 `git archive 6c1740c apps/safedesk-control-plane` 导出未修改
 基线，在相同环境单独运行这两个文件，复现相同的 12 项通过、2 个文件失败。
-本 PR 未修改该既有问题，不能把 Node 全套结果报告为全部通过。
+后续 CI 排查已修复该测试竞争：两个测试工厂先通过 `listMasked()` 等待初始化
+完成，再把实例交给用例。重新运行 Node 全套，225 项全部通过，且无后台
+ENOENT/unhandledRejection；没有通过忽略异常或延时来规避问题。
 
 沙箱环境最初禁止绑定本机端口，HTTP 测试曾出现 EPERM；允许临时本机服务后
 重新运行，以上结果均为实际执行结果，不将权限失败作为功能失败计数。
