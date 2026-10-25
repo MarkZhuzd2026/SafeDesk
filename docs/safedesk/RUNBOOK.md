@@ -54,3 +54,12 @@ PORT=8443 HOST=0.0.0.0 python3 server.py
 5. 创建待审批沙箱，查看编译后的启动清单。
 6. 管理员审批启动后，安全事件会记录凭据代签与外联拦截。
 7. 终止沙箱，确认状态变为 `terminated`。
+
+## 沙箱镜像 / Sandbox images（2026-10-25 实测）
+
+- 开发机已安装 wasmer 7.5.0：`/usr/local/bin/wasmer`（产物解压自 gh-proxy.com 镜像下载的 `wasmer-linux-amd64.tar.gz`，GitHub 直连过慢）。gzip 缓存在 `/tmp/wasmer.tar.gz`。
+- 自定义镜像源码：`apps/safedesk-images/agent-python/`（三个 agent 引导脚本 + wasmer.toml + 构建/验证命令，不含大体积运行时 blob）。
+- 开发机上已构建产物：`/opt/wasmer-images/safedesk-agent-python.webc`。
+- 端到端验证（通过控制面 API）：build 策略 + `packages: ["/opt/wasmer-images/safedesk-agent-python.webc"]` + `workspace: "/srv/ci-demo"`，审批后 runtime.mode=wasmer，guest 内 dsh 引导脚本执行 /workspace/run_ci.py，launcher 日志回传 CI 结果（4 个 unittest 全过）。
+- CI 演示工作区：开发机 `/srv/ci-demo`。
+- 已知约束：`packages` 目前允许任意本地路径，包白名单收口见 REQUIREMENTS-100 的 REQ-PL-005。
