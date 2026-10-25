@@ -271,6 +271,8 @@ SafeDesk 与市面主流企业级沙箱的能力对比（2026 年 10 月调研�
 
 ### 文档
 
+- 用户操作手册：[docs/safedesk/USER-GUIDE.md](docs/safedesk/USER-GUIDE.md)
+- 开发文档：[docs/safedesk/DEVELOPMENT.md](docs/safedesk/DEVELOPMENT.md)
 - 架构设计：[docs/safedesk/ARCHITECTURE.md](docs/safedesk/ARCHITECTURE.md)
 - 市场调研：[docs/safedesk/MARKET-SANDBOX-SURVEY-2026-10.md](docs/safedesk/MARKET-SANDBOX-SURVEY-2026-10.md)
 - 需求清单（100 项）：[docs/safedesk/REQUIREMENTS-100.md](docs/safedesk/REQUIREMENTS-100.md)
@@ -539,6 +541,8 @@ SafeDesk versus mainstream enterprise sandboxes (surveyed October 2026):
 
 ### Docs
 
+- User guide: [docs/safedesk/USER-GUIDE.md](docs/safedesk/USER-GUIDE.md)
+- Developer guide: [docs/safedesk/DEVELOPMENT.md](docs/safedesk/DEVELOPMENT.md)
 - Architecture: [docs/safedesk/ARCHITECTURE.md](docs/safedesk/ARCHITECTURE.md)
 - Market survey: [docs/safedesk/MARKET-SANDBOX-SURVEY-2026-10.md](docs/safedesk/MARKET-SANDBOX-SURVEY-2026-10.md)
 - Requirements backlog (100): [docs/safedesk/REQUIREMENTS-100.md](docs/safedesk/REQUIREMENTS-100.md)
