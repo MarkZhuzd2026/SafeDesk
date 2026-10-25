@@ -36,3 +36,6 @@ result
 result-*
 /lib/wasix/tests/wasm_tests/build/
 .env
+
+# SafeDesk custom sandbox image manifests
+!apps/safedesk-images/**/wasmer.toml

@@ -1,0 +1,24 @@
+[package]
+name = "safedesk/agent-python"
+version = "0.1.0"
+description = "SafeDesk sandbox image: CPython runtime plus host-audited agent bootstraps (claude/codex/dsh)"
+license = "ISC"
+entrypoint = "python"
+
+[fs]
+"/" = "./agentroot"
+"/cpython" = "./cpython"
+"/openssl" = "./openssl"
+
+[[module]]
+name = "python"
+source = "./modules/python"
+
+[[command]]
+name = "python"
+module = "python"
+runner = "https://webc.org/runner/wasi"
+
+[command.annotations.wasi]
+atom = "python"
+env = ["PYTHONEXECUTABLE=/bin/python", "PYTHONHOME=/cpython"]
