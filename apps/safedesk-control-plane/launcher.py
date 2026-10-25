@@ -69,20 +69,22 @@ class Launcher:
 
     def _limits(self, sandbox: dict):  # pragma: no cover - platform dependent
         policy = POLICIES.get(sandbox.get("policyId", ""), {})
-        mem = int(policy.get("maxMemoryMb", 1024))
         cpu = int(policy.get("maxCpu", 1))
+        # NOTE: do not clamp RLIMIT_AS here. wasmer reserves large virtual
+        # address space for WASM linear memories and fails to spawn under an
+        # address-space cap (verified on Ubuntu 24.04, os error 12). Memory
+        # ceilings belong to Wasm memory pages / cgroup enforcement instead.
 
         def apply():
             import resource
-            for what, desired in ((resource.RLIMIT_AS, mem * 1024 * 1024), (resource.RLIMIT_CPU, cpu * 60)):
-                try:
-                    soft, hard = resource.getrlimit(what)
-                    target = desired
-                    if hard != resource.RLIM_INFINITY and (target <= 0 or target > hard):
-                        target = hard
-                    resource.setrlimit(what, (target if target > 0 else soft, hard))
-                except (OSError, ValueError):
-                    pass  # host does not support this rlimit; enforcement stays at the monitor
+            try:
+                soft, hard = resource.getrlimit(resource.RLIMIT_CPU)
+                target = cpu * 60
+                if hard != resource.RLIM_INFINITY and (target <= 0 or target > hard):
+                    target = hard
+                resource.setrlimit(resource.RLIMIT_CPU, (target if target > 0 else soft, hard))
+            except (OSError, ValueError):
+                pass  # host does not support this rlimit
         return apply
 
     def start(self, sandbox: dict, manifest: dict) -> dict:
