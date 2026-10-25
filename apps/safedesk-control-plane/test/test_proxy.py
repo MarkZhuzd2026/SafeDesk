@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import http.client
 import http.server
+import json
 import socket
 import sys
 import tempfile
@@ -17,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import proxy as proxy_module  # noqa: E402
+from privacy import alias_profile  # noqa: E402
 from proxy import EgressPolicy, ProxyRuntime, is_blocked_host, serve  # noqa: E402
 
 
@@ -147,6 +149,109 @@ class ProxyRuntimeTest(unittest.TestCase):
     def test_block_events_recorded(self):
         self.raw_get("/x", auth=None)
         self.assertTrue(any(event["level"] == "block" for event in self.runtime.snapshot_events()))
+
+
+class MeituanOrderHandler(http.server.BaseHTTPRequestHandler):
+    """Mock 美团平台：回显收到的 JSON 体和别名头。"""
+
+    def do_POST(self):
+        size = int(self.headers.get("Content-Length", "0") or 0)
+        raw = self.rfile.read(size) if size else b""
+        body = json.dumps({
+            "body": raw.decode("utf-8"),
+            "aliasHeader": self.headers.get("X-Safedesk-Alias-Id"),
+            "auth": self.headers.get("Authorization"),
+        }).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        return
+
+
+class PrivacyCurtainProxyTest(unittest.TestCase):
+    """外卖隐私下单场景：平台只见沙箱别名，真实姓名/手机号/银行卡不出沙箱。"""
+
+    ORIGIN_HOST = "meituan.demo.local"
+
+    def setUp(self):
+        self.runtime = ProxyRuntime()
+        self.runtime.register("sbx-takeout", "tok-order", EgressPolicy(
+            [self.ORIGIN_HOST],
+            {"{{SD_CRED_sbx-takeout_pay}}": {"value": "pay-token-real-9f81", "hosts": [self.ORIGIN_HOST]}},
+            alias_profile("sbx-takeout"),
+        ))
+        self.proxy = serve(self.runtime, "127.0.0.1", 0)
+        self.proxy_port = self.proxy.server_port
+        self.origin = http.server.ThreadingHTTPServer(("127.0.0.1", 0), MeituanOrderHandler)
+        threading.Thread(target=self.origin.serve_forever, daemon=True).start()
+        self.origin_port = self.origin.server_port
+        self.dns_patch = unittest.mock.patch.object(proxy_module, "resolve_host", return_value=["93.184.216.34"])
+        self.dns_patch.start()
+        real_connect = socket.create_connection
+
+        def rerouted(address, *args, **kwargs):
+            host, port = address
+            if host == self.ORIGIN_HOST and port == self.origin_port:
+                return real_connect(("127.0.0.1", self.origin_port), *args, **kwargs)
+            return real_connect(address, *args, **kwargs)
+
+        self.conn_patch = unittest.mock.patch("socket.create_connection", side_effect=rerouted)
+        self.conn_patch.start()
+
+    def tearDown(self):
+        self.conn_patch.stop()
+        self.dns_patch.stop()
+        self.proxy.shutdown()
+        self.origin.shutdown()
+
+    def post_order(self, payload: bytes, headers: dict | None = None) -> tuple[int, dict]:
+        conn = http.client.HTTPConnection("127.0.0.1", self.proxy_port, timeout=5)
+        all_headers = {
+            "Proxy-Authorization": "Basic " + base64.b64encode(b"sbx-takeout:tok-order").decode(),
+            "Content-Type": "application/json",
+            "Content-Length": str(len(payload)),
+        }
+        all_headers.update(headers or {})
+        conn.request("POST", f"http://{self.ORIGIN_HOST}:{self.origin_port}/api/v1/order", body=payload, headers=all_headers)
+        resp = conn.getresponse()
+        data = json.loads(resp.read() or b"{}")
+        conn.close()
+        return resp.status, data
+
+    def test_platform_sees_alias_only_no_real_pii(self):
+        real = {
+            "name": "张伟",
+            "phone": "13812345678",
+            "address": "滨江路88号春天花园3栋1201",
+            "cardNo": "4111111111111111",
+            "items": [{"name": "黄焖鸡米饭", "count": 1}],
+            "note": "电话 13812345678 联系",
+        }
+        status, echoed = self.post_order(json.dumps(real, ensure_ascii=False).encode("utf-8"))
+        self.assertEqual(status, 200)
+        body = echoed["body"]
+        self.assertNotIn("张伟", body)
+        self.assertNotIn("13812345678", body)
+        self.assertNotIn("春天花园", body)
+        self.assertNotIn("4111111111111111", body)
+        alias = alias_profile("sbx-takeout")
+        self.assertIn(alias["phone"], body)
+        self.assertIn(alias["address"], body)
+        self.assertIn("黄焖鸡米饭", body)
+        self.assertEqual(echoed["aliasHeader"], alias["aliasId"])
+        self.assertTrue(any("脱敏" in event["detail"] for event in self.runtime.snapshot_events()))
+
+    def test_payment_token_injected_only_for_meituan(self):
+        status, echoed = self.post_order(
+            json.dumps({"orderId": "A123"}).encode("utf-8"),
+            headers={"Authorization": "{{SD_CRED_sbx-takeout_pay}}"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(echoed["auth"], "pay-token-real-9f81")
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ import { AuditLog } from './src/audit.mjs';
 import { CredentialBroker } from './src/broker.mjs';
 import { Launcher, workspaceAllowed } from './src/launch.mjs';
 import { EgressPolicy, ProxyRuntime, serve as serveProxy } from './src/proxy.mjs';
+import { aliasProfile } from './src/privacy.mjs';
 import { defaultSettings, defaultTemplates, catalog, enrichSandbox, filterEvents, filterSandboxes, mergeSettings, overview as productOverview, riskFor } from './src/product.mjs';
 
 const PORT = Number(process.env.PORT ?? 8022);
@@ -315,6 +316,7 @@ async function api(req, res, url) {
       mcpServers: Array.isArray(input.mcpServers) ? input.mcpServers.slice(0, 12) : [],
       purpose: String(input.purpose || '').trim().slice(0, 160),
       notes: String(input.notes || '').trim().slice(0, 240),
+      privacyCurtain: Boolean(input.privacy),
       risk: riskFor(policyId),
       status: 'pending_approval', createdAt: new Date().toISOString(),
       ownerId: user.id, ownerName: user.displayName || user.username || user.id,
@@ -368,7 +370,8 @@ async function api(req, res, url) {
               if (placeholder) injections[placeholder] = { value: item.value, hosts: item.allowedHosts };
             }
           }
-          proxyRuntime.register(id, token, new EgressPolicy([...allowed], injections));
+          const alias = sandbox.privacyCurtain ? aliasProfile(id) : null;
+          proxyRuntime.register(id, token, new EgressPolicy([...allowed], injections, alias));
           manifest.egress = { token };
         }
         runtimeInfo = launcher.start(sandbox, manifest);

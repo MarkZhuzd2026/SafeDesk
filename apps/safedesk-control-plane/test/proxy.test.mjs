@@ -2,6 +2,7 @@ import http from 'node:http';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { aliasProfile } from '../src/privacy.mjs';
 import { EgressPolicy, ProxyRuntime, isBlockedHost, serve } from '../src/proxy.mjs';
 
 const echoHandler = (req, res) => {
@@ -150,5 +151,105 @@ test('block events recorded for anonymous attempts', async () => {
   await withProxyRuntime(async ({ runtime, proxyPort, originPort }) => {
     await rawGet(proxyPort, '/x', { auth: null, originPort });
     assert.ok(runtime.snapshotEvents().some((event) => event.level === 'block'));
+  });
+});
+
+const meituanHandler = (req, res) => {
+  const chunks = [];
+  req.on('data', (chunk) => chunks.push(chunk));
+  req.on('end', () => {
+    const body = JSON.stringify({
+      body: Buffer.concat(chunks).toString('utf8'),
+      aliasHeader: req.headers['x-safedesk-alias-id'] ?? null,
+      auth: req.headers['authorization'] ?? null,
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
+    res.end(body);
+  });
+};
+
+function rawPost(proxyPort, path, { auth = 'sbx-takeout:tok-order', payload, originHost, originPort, headers = {} }) {
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      host: '127.0.0.1', port: proxyPort,
+      method: 'POST',
+      path: `http://${originHost}:${originPort}${path}`,
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+        ...(auth ? { 'Proxy-Authorization': `Basic ${Buffer.from(auth).toString('base64')}` } : {}),
+        ...headers,
+      },
+    }, (res) => {
+      let data = Buffer.alloc(0);
+      res.on('data', (chunk) => { data = Buffer.concat([data, chunk]); });
+      res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(data.toString() || '{}') }));
+    });
+    request.on('error', reject);
+    request.end(payload);
+  });
+}
+
+async function withMeituanProxy(testFn) {
+  const runtime = new ProxyRuntime();
+  runtime.register('sbx-takeout', 'tok-order', new EgressPolicy(
+    ['meituan.demo.local'],
+    { '{{SD_CRED_sbx-takeout_pay}}': { value: 'pay-token-real-9f81', hosts: ['meituan.demo.local'] } },
+    aliasProfile('sbx-takeout'),
+  ));
+  const origin = http.createServer(meituanHandler);
+  const originPort = await listen(origin);
+  const proxy = serve(runtime, '127.0.0.1', 0, {
+    resolveHost: async () => ['93.184.216.34'],
+    connectTarget: (hostName, port) => (hostName === 'meituan.demo.local' ? { host: '127.0.0.1', port: originPort } : { host: hostName, port }),
+  });
+  const proxyPort = await listen(proxy);
+  try {
+    await testFn({ runtime, proxyPort, originPort });
+  } finally {
+    await new Promise((resolveFn) => proxy.close(resolveFn));
+    await new Promise((resolveFn) => origin.close(resolveFn));
+  }
+}
+
+test('platform sees alias only, no real PII (外卖隐私下单)', async () => {
+  await withMeituanProxy(async ({ runtime, proxyPort, originPort }) => {
+    const real = {
+      name: '张伟',
+      phone: '13812345678',
+      address: '滨江路88号春天花园3栋1201',
+      cardNo: '4111111111111111',
+      items: [{ name: '黄焖鸡米饭', count: 1 }],
+      note: '电话 13812345678 联系',
+    };
+    const { status, body: echoed } = await rawPost(proxyPort, '/api/v1/order', {
+      payload: JSON.stringify(real),
+      originHost: 'meituan.demo.local',
+      originPort,
+    });
+    assert.equal(status, 200);
+    assert.ok(!echoed.body.includes('张伟'));
+    assert.ok(!echoed.body.includes('13812345678'));
+    assert.ok(!echoed.body.includes('春天花园'));
+    assert.ok(!echoed.body.includes('4111111111111111'));
+    const alias = aliasProfile('sbx-takeout');
+    assert.ok(echoed.body.includes(alias.phone));
+    assert.ok(echoed.body.includes(alias.address));
+    assert.ok(echoed.body.includes('黄焖鸡米饭'));
+    assert.equal(echoed.aliasHeader, alias.aliasId);
+    assert.ok(runtime.snapshotEvents().some((event) => event.detail.includes('脱敏')));
+  });
+});
+
+test('payment token injected only for meituan allowlisted host', async () => {
+  await withMeituanProxy(async ({ proxyPort, originPort }) => {
+    const { status, body: echoed } = await rawPost(proxyPort, '/api/v1/order', {
+      payload: JSON.stringify({ orderId: 'A123' }),
+      originHost: 'meituan.demo.local',
+      originPort,
+      headers: { Authorization: '{{SD_CRED_sbx-takeout_pay}}' },
+    });
+    assert.equal(status, 200);
+    assert.equal(echoed.auth, 'pay-token-real-9f81');
   });
 });

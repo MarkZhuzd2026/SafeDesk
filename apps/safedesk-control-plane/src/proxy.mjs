@@ -2,6 +2,8 @@ import dns from 'node:dns/promises';
 import http from 'node:http';
 import net from 'node:net';
 
+import { anonymizeOrderFields, redactPii } from './privacy.mjs';
+
 /** Per-sandbox egress proxy: allowlist + SSRF guard + broker-mediated credential injection (REQ-NW-001..009, 013, 014). */
 export const BLOCKED_CIDRS = [
   ['0.0.0.0', 8], ['10.0.0.0', 8], ['127.0.0.0', 8], ['169.254.0.0', 16],
@@ -42,9 +44,10 @@ export async function isBlockedHost(host, resolver = resolveHost) {
 }
 
 export class EgressPolicy {
-  constructor(allowed = [], injections = {}) {
+  constructor(allowed = [], injections = {}, alias = null) {
     this.allowed = new Set((allowed || []).map((host) => String(host).trim().toLowerCase()).filter(Boolean));
     this.injections = injections || {};
+    this.alias = alias || null;
   }
 
   allows(host) {
@@ -169,6 +172,41 @@ export function serve(runtime, host = '127.0.0.1', port = 0, options = {}) {
       if (injectError) return deny(runtime, req, res, 403, injectError);
       const port = Number(target.port || 80);
       const outboundTarget = connectTarget ? connectTarget(hostName, port) : { host: hostName, port };
+      let body;
+      if (entry.policy.alias) {
+        const chunks = [];
+        for await (const chunk of req) chunks.push(chunk);
+        const rawBody = Buffer.concat(chunks);
+        let headerHits = 0;
+        for (const key of Object.keys(injected)) {
+          const [redacted, hits] = redactPii(String(injected[key]));
+          injected[key] = redacted;
+          headerHits += hits.length;
+        }
+        injected['x-safedesk-alias-id'] = entry.policy.alias.aliasId;
+        let totalHits = headerHits;
+        if (rawBody.length) {
+          const contentType = String(req.headers['content-type'] || '').toLowerCase();
+          const text = rawBody.toString('utf8');
+          if (contentType.includes('json')) {
+            try {
+              const [payload, swaps] = anonymizeOrderFields(JSON.parse(text), entry.policy.alias);
+              body = Buffer.from(JSON.stringify(payload), 'utf8');
+              totalHits += swaps.length;
+            } catch {
+              const [redacted, hits] = redactPii(text);
+              body = Buffer.from(redacted, 'utf8');
+              totalHits += hits.length;
+            }
+          } else {
+            const [redacted, hits] = redactPii(text);
+            body = Buffer.from(redacted, 'utf8');
+            totalHits += hits.length;
+          }
+        }
+        if (totalHits) runtime.record('info', `${req.method} ${hostName} 个人信息脱敏 ${totalHits} 项`);
+        if (body !== undefined) injected['content-length'] = String(body.length);
+      }
       return new Promise((resolveOutbound) => {
         const outbound = http.request({
           host: outboundTarget.host,
@@ -187,7 +225,9 @@ export function serve(runtime, host = '127.0.0.1', port = 0, options = {}) {
           resolveOutbound();
         });
         res.on('finish', () => runtime.record('allow', `${req.method} ${hostName} 放行`));
-        req.pipe(outbound);
+        if (body) outbound.write(body);
+        else req.pipe(outbound);
+        outbound.end();
       });
     } catch (error) {
       if (!res.headersSent) deny(runtime, req, res, 400, '请求必须为绝对 URI');

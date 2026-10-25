@@ -39,6 +39,8 @@ export const allowedAgents = {
 
 export const secretPaths = ['/.env', '/.env.*', '/.ssh/**', '/.aws/**', '/.config/**', '/.npmrc', '/.pypirc'];
 
+import { aliasProfile } from './privacy.mjs';
+
 export function compileManifest(sandbox) {
   const policy = policies[sandbox.policyId];
   const agent = allowedAgents[sandbox.agent];
@@ -57,6 +59,7 @@ export function compileManifest(sandbox) {
     credentialBroker: { enabled: true, exposedValues: false, profiles: sandbox.credentials },
     environment: { ...(sandbox.credentialPlaceholders || {}) },
     mcpGateway: { enabled: true, transport: 'streamable-http', allowedServers: sandbox.mcpServers },
+    privacy: { curtain: Boolean(sandbox.privacyCurtain), alias: sandbox.privacyCurtain ? aliasProfile(sandbox.id) : null },
     enforcement: { approval: policy.approval, maxCpu: policy.maxCpu, maxMemoryMb: policy.maxMemoryMb, audit: 'append-only' },
   };
 }

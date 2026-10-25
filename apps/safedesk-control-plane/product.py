@@ -56,6 +56,17 @@ DEFAULT_TEMPLATES = [
         "mcpServers": [],
         "purpose": "临时工作区构建，出网必须走白名单。",
     },
+    {
+        "id": "tpl-takeout",
+        "name": "外卖隐私下单",
+        "agent": "dsh",
+        "policyId": "balanced",
+        "workspace": "/srv/orders/takeout",
+        "credentials": ["meituan-proxy"],
+        "mcpServers": [],
+        "privacy": True,
+        "purpose": "隐私保护下单：姓名/手机号/地址用沙箱别名替身，支付凭据主机代签，平台拿到的信息全部脱敏。",
+    },
 ]
 
 
@@ -79,7 +90,7 @@ def catalog() -> dict:
         ],
         "agents": [{"id": key, **value, "supported": True} for key, value in ALLOWED_AGENTS.items()],
         "capabilities": {
-            "credentials": ["github-read", "gitlab-read", "openai-proxy", "anthropic-proxy", "internal-mcp"],
+            "credentials": ["github-read", "gitlab-read", "openai-proxy", "anthropic-proxy", "internal-mcp", "meituan-proxy"],
             "mcpServers": ["github", "gitlab", "jira", "confluence", "browser", "docs"],
         },
     }

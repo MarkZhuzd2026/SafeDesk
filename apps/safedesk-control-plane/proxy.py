@@ -15,6 +15,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
+from privacy import anonymize_order_fields, redact_pii
+
 BLOCKED_CIDRS = [
     ("0.0.0.0", 8), ("10.0.0.0", 8), ("127.0.0.0", 8), ("169.254.0.0", 16),
     ("172.16.0.0", 12), ("192.168.0.0", 16), ("100.64.0.0", 10),
@@ -58,9 +60,11 @@ def is_blocked_host(host: str) -> tuple[bool, str]:
 
 
 class EgressPolicy:
-    def __init__(self, allowed: list[str] | None, injections: dict[str, dict] | None = None):
+    def __init__(self, allowed: list[str] | None, injections: dict[str, dict] | None = None,
+                 alias: dict | None = None):
         self.allowed = {h.strip().lower() for h in (allowed or []) if str(h).strip()}
         self.injections = injections or {}  # placeholder -> {value, hosts}
+        self.alias = alias or None  # privacy curtain identity (REQ 外卖隐私下单场景)
 
     def allows(self, host: str) -> bool:
         host = (host or "").strip().lower().split(":")[0]
@@ -257,6 +261,36 @@ def make_handler(runtime: ProxyRuntime):
             size = int(self.headers.get("Content-Length", "0") or 0)
             if size:
                 body = self.rfile.read(size)
+            # Privacy curtain: scrub identity before anything leaves the sandbox.
+            if entry["policy"].alias:
+                alias = entry["policy"].alias
+                scrubbed_headers = {}
+                header_hits = 0
+                for key, value in headers.items():
+                    redacted, hits = redact_pii(str(value))
+                    scrubbed_headers[key] = redacted
+                    header_hits += len(hits)
+                headers = scrubbed_headers
+                headers["X-Safedesk-Alias-Id"] = alias["aliasId"]
+                hits_all = header_hits
+                if body:
+                    content_type = str(self.headers.get("Content-Type", "")).lower()
+                    text = body.decode("utf-8", "replace")
+                    if "json" in content_type:
+                        try:
+                            payload_obj, swaps = anonymize_order_fields(json.loads(text), alias)
+                            body = json.dumps(payload_obj, ensure_ascii=False).encode("utf-8")
+                            hits_all += len(swaps)
+                        except json.JSONDecodeError:
+                            redacted, hits = redact_pii(text)
+                            body = redacted.encode("utf-8")
+                            hits_all += len(hits)
+                    else:
+                        redacted, hits = redact_pii(text)
+                        body = redacted.encode("utf-8")
+                        hits_all += len(hits)
+                if hits_all:
+                    runtime.record("info", f"{self.command} {host} 个人信息脱敏 {hits_all} 项")
             port = target.port or (443 if target.scheme == "https" else 80)
             cls = http.client.HTTPSConnection if target.scheme == "https" else http.client.HTTPConnection
             conn = cls(host, port, timeout=30)

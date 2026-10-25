@@ -91,8 +91,8 @@ class DefaultSettingsTest(unittest.TestCase):
 
 
 class TemplatesTest(unittest.TestCase):
-    def test_exactly_three_templates(self):
-        self.assertEqual(len(DEFAULT_TEMPLATES), 3)
+    def test_exactly_four_templates(self):
+        self.assertEqual(len(DEFAULT_TEMPLATES), 4)
 
     def test_review_template_policy(self):
         self.assertEqual(DEFAULT_TEMPLATES[0]["policyId"], "review")

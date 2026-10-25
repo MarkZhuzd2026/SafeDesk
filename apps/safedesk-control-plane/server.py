@@ -19,6 +19,7 @@ from auth import AuthStore
 from broker import CredentialBroker
 from launcher import Launcher, workspace_allowed
 from policy import ALLOWED_AGENTS, POLICIES, compile_manifest
+from privacy import alias_profile
 from product import DEFAULT_TEMPLATES, catalog, enrich_sandbox, filter_events, filter_sandboxes, merge_settings, overview as product_overview, risk_for
 from proxy import EgressPolicy, ProxyRuntime, serve as serve_proxy
 
@@ -426,6 +427,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
                     "mcpServers": list(payload.get("mcpServers") or [])[:12],
                     "purpose": str(payload.get("purpose") or "").strip()[:160],
                     "notes": str(payload.get("notes") or "").strip()[:240],
+                    "privacyCurtain": bool(payload.get("privacy", False)),
                     "risk": risk_for(policy_id),
                     "status": "pending_approval", "createdAt": iso_now(),
                     "ownerId": user["id"], "ownerName": user.get("displayName") or user.get("username") or user["id"],
@@ -489,7 +491,8 @@ class ApiHandler(SimpleHTTPRequestHandler):
                                 placeholder = (sandbox.get("credentialPlaceholders") or {}).get(capability)
                                 if placeholder:
                                     injections[placeholder] = {"value": item["value"], "hosts": item["allowedHosts"]}
-                        PROXY_RT.register(sandbox_id, token, EgressPolicy(sorted(allowed), injections))
+                        alias = alias_profile(sandbox_id) if sandbox.get("privacyCurtain") else None
+                        PROXY_RT.register(sandbox_id, token, EgressPolicy(sorted(allowed), injections, alias))
                         manifest["egress"] = {"token": token}
                     rng = LAUNCHER.info(sandbox_id)
                     runtime_info = LAUNCHER.start(sandbox, manifest) if not rng.get("alive") else rng
