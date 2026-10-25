@@ -11,6 +11,18 @@ E2E-08  credential broker: masked listing, manifest/data file never leak secrets
 E2E-09  egress proxy: auth, SSRF guard, allowlist, pause freeze
 E2E-10  audit history persistence (audit.jsonl + history query + non-admin 403)
 
+Business-scenario round:
+E2E-11  task templates -> correct policy manifests per template
+E2E-12  sandbox search & filters (q/status/agent/policyId combinations)
+E2E-13  overview metrics consistent with sandbox states + riskMix + health
+E2E-14  bootstrap role difference: user gets empty securityEvents, admin full
+E2E-15  workspaceRoots governance: outside/root-escape rejected, settings persisted
+E2E-16  rejection flow: reason, rejectedBy, block event, terminal rejected state
+E2E-17  egress credential lifecycle: wildcard allowlist, token dies on terminate
+E2E-18  audit retention prune at startup (old + corrupted lines dropped)
+E2E-19  SAFEDESK_ADMIN_PHONES phone-to-admin role, no password change for it
+E2E-20  restart business continuity: sandboxes/users/settings/password/sessions
+
 Run: python3 -m unittest test.test_e2e -v
 """
 from __future__ import annotations
@@ -28,6 +40,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -47,12 +60,54 @@ class E2EBase(unittest.TestCase):
     """Spins up server.py once with SAFEDESK_AUTH=1 and an isolated data dir."""
 
     @classmethod
+    def extra_env(cls) -> dict:
+        """Subclass hook: additional env vars for the spawned server."""
+        return {}
+
+    @classmethod
+    def prepare_data_dir(cls, data_dir: Path) -> None:
+        """Subclass hook: seed files into the data dir before the server starts."""
+
+    @classmethod
+    def _spawn(cls) -> None:
+        cls.server = subprocess.Popen(
+            [sys.executable, "server.py"],
+            cwd=ROOT,
+            env=cls.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        cls.wait_ready()
+
+    @classmethod
+    def wait_ready(cls) -> None:
+        for _ in range(60):
+            try:
+                cls.request("GET", "/api/auth/config")
+                return
+            except OSError:
+                time.sleep(0.1)
+        raise RuntimeError("server did not start")
+
+    @classmethod
+    def respawn(cls) -> None:
+        """Kill the current server and start a new one against the same data dir."""
+        cls.server.terminate()
+        try:
+            cls.server.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            cls.server.kill()
+            cls.server.wait(timeout=5)
+        time.sleep(0.2)
+        cls._spawn()
+
+    @classmethod
     def setUpClass(cls):
         cls.data_dir = Path(tempfile.mkdtemp(prefix="safedesk-e2e-"))
         cls.port = free_port()
         cls.proxy_port = free_port()
         cls.base = f"http://127.0.0.1:{cls.port}"
-        env = {
+        cls.env = {
             **os.environ,
             "PORT": str(cls.port),
             "HOST": "127.0.0.1",
@@ -60,23 +115,14 @@ class E2EBase(unittest.TestCase):
             "SAFEDESK_AUTH": "1",
             "SAFEDESK_DEMO": "1",
             "SAFEDESK_EGRESS_PROXY_PORT": str(cls.proxy_port),
+            **cls.extra_env(),
         }
-        cls.server = subprocess.Popen(
-            [sys.executable, "server.py"],
-            cwd=ROOT,
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        for _ in range(60):
-            try:
-                cls.request("GET", "/api/auth/config")
-                break
-            except OSError:
-                time.sleep(0.1)
-        else:
+        cls.prepare_data_dir(cls.data_dir)
+        try:
+            cls._spawn()
+        except RuntimeError:
             cls.tearDownClass()
-            raise RuntimeError("server did not start")
+            raise
 
     @classmethod
     def tearDownClass(cls):
@@ -607,6 +653,404 @@ class TestE2E10AuditHistory(E2EBase):
         self.assertEqual(status, 403)
         status, _ = self.request("GET", "/api/events?history=1", token=user)
         self.assertEqual(status, 403)
+
+
+class TestE2E11TaskTemplates(E2EBase):
+    """E2E-11: sandbox creation from task templates yields the right policy manifest."""
+
+    def test_e2e_11(self):
+        _, admin = self.admin_login()
+        admin_token = admin["token"]
+
+        status, body = self.request("GET", "/api/templates", token=admin_token)
+        self.assertEqual(status, 200)
+        templates = {t["id"]: t for t in body["templates"]}
+        self.assertGreaterEqual(len(templates), 3)
+
+        status, catalog = self.request("GET", "/api/catalog", token=admin_token)
+        self.assertEqual(status, 200)
+        self.assertIn("github-read", catalog["capabilities"]["credentials"])
+
+        expectations = {
+            "tpl-review": ("ro", "disabled", "低风险", "codex"),
+            "tpl-dev": ("rw", "brokered", "中风险", "claude-code"),
+            "tpl-build": ("ephemeral", "allowlist", "高风险", "dsh"),
+        }
+        for tpl_id, (fs_mode, network, risk, agent) in expectations.items():
+            tpl = templates[tpl_id]
+            status, created = self.create_sandbox(
+                admin_token,
+                name=f"from-{tpl_id}",
+                agent=tpl["agent"],
+                policyId=tpl["policyId"],
+                workspace=tpl["workspace"],
+                credentials=tpl["credentials"],
+                mcpServers=tpl["mcpServers"],
+                purpose=tpl["purpose"],
+            )
+            self.assertEqual(status, 201, tpl_id)
+            sandbox = created["sandbox"]
+            manifest = created["manifest"]
+            self.assertEqual(sandbox["agent"], agent, tpl_id)
+            self.assertEqual(sandbox["risk"], risk, tpl_id)
+            self.assertEqual(manifest["filesystem"]["mode"], fs_mode, tpl_id)
+            self.assertEqual(manifest["runtime"]["network"], network, tpl_id)
+            self.assertEqual(manifest["filesystem"]["workspace"], tpl["workspace"], tpl_id)
+            self.assertEqual(manifest["credentialBroker"]["profiles"], tpl["credentials"], tpl_id)
+            self.assertFalse(manifest["credentialBroker"]["exposedValues"], tpl_id)
+
+
+class TestE2E12SearchAndFilters(E2EBase):
+    """E2E-12: combined q/status/agent/policyId filters hit and miss as expected."""
+
+    def test_e2e_12(self):
+        _, admin = self.admin_login()
+        token = admin["token"]
+
+        _, one = self.create_sandbox(token, name="alpha-pay", purpose="支付网关改造", agent="codex", policyId="balanced")
+        alpha = one["sandbox"]["id"]
+        _, two = self.create_sandbox(token, name="beta-search", purpose="检索服务", agent="claude-code", policyId="build")
+        beta = two["sandbox"]["id"]
+        self.create_sandbox(token, name="gamma-note", purpose="无关沙箱", agent="dsh", policyId="review")
+
+        def ids(query: str) -> set[str]:
+            status, body = self.request("GET", f"/api/sandboxes{query}", token=token)
+            assert status == 200
+            return {item["id"] for item in body["sandboxes"]}
+
+        # 关键字：命中 name / purpose，大小写与中文均可
+        self.assertIn(alpha, ids("?q=alpha"))
+        self.assertIn(alpha, ids("?q=%E6%94%AF%E4%BB%98"))  # 支付
+        self.assertNotIn(beta, ids("?q=%E6%94%AF%E4%BB%98"))
+
+        # 状态 / 代理 / 策略 单维过滤
+        self.assertEqual({alpha, beta} | ids("?status=pending_approval"), ids("?status=pending_approval"))
+        self.assertIn(beta, ids("?agent=claude-code"))
+        self.assertNotIn(alpha, ids("?agent=claude-code"))
+        self.assertIn(beta, ids("?policyId=build"))
+        self.assertNotIn(alpha, ids("?policyId=build"))
+
+        # 组合过滤：只保留同时满足的
+        self.assertIn(alpha, ids("?status=pending_approval&agent=codex&policyId=balanced&q=alpha"))
+        self.assertNotIn(beta, ids("?status=pending_approval&agent=codex&q=beta"))
+
+        # 变更状态后筛选跟随变化
+        self.request("POST", f"/api/sandboxes/{alpha}/approve", token=token)
+        self.assertNotIn(alpha, ids("?status=pending_approval"))
+        self.assertIn(alpha, ids("?status=running"))
+
+
+class TestE2E13OverviewMetrics(E2EBase):
+    """E2E-13: overview counters match real sandbox states, riskMix ignores terminated."""
+
+    def test_e2e_13(self):
+        _, admin = self.admin_login()
+        admin_token = admin["token"]
+        user = self.phone_login("13900000010")
+
+        _, a = self.create_sandbox(user, name="ov-pending")                                # pending
+        _, b = self.create_sandbox(user, name="ov-running")                                # running
+        _, c = self.create_sandbox(user, name="ov-paused")                                 # paused
+        _, d = self.create_sandbox(user, name="ov-rejected")                               # rejected
+        _, e = self.create_sandbox(user, name="ov-terminated")                             # terminated
+        self.request("POST", f"/api/sandboxes/{b['sandbox']['id']}/approve", token=admin_token)
+        self.request("POST", f"/api/sandboxes/{c['sandbox']['id']}/approve", token=admin_token)
+        self.request("POST", f"/api/sandboxes/{c['sandbox']['id']}/pause", token=user)
+        self.request("POST", f"/api/sandboxes/{d['sandbox']['id']}/reject", {"reason": "指标测试"}, token=admin_token)
+        self.request("POST", f"/api/sandboxes/{e['sandbox']['id']}/terminate", token=user)
+
+        status, body = self.request("GET", "/api/overview", token=admin_token)
+        self.assertEqual(status, 200)
+        ov = body["overview"]
+        self.assertEqual(ov["total"], 5)
+        self.assertEqual(ov["pendingApproval"], 1)
+        self.assertEqual(ov["running"], 1)
+        self.assertEqual(ov["paused"], 1)
+        self.assertEqual(ov["rejected"], 1)
+        self.assertEqual(ov["terminated"], 1)
+        self.assertEqual(ov["health"], "attention", "有待审批沙箱时必须 attention")
+        self.assertEqual(sum(ov["riskMix"].values()), 4, "riskMix 不计已终止")
+        self.assertEqual(ov["riskMix"]["低风险"], 4, "默认 review 策略全部是低风险")
+        self.assertEqual(ov["activeUsers"], 1)
+        self.assertEqual(ov["role"], "admin")
+
+        # 全清后 health 回到 healthy
+        for sid in (a["sandbox"]["id"], b["sandbox"]["id"], c["sandbox"]["id"]):
+            self.request("POST", f"/api/sandboxes/{sid}/terminate", token=admin_token)
+        _, body = self.request("GET", "/api/overview", token=admin_token)
+        self.assertEqual(body["overview"]["health"], "healthy")
+        self.assertEqual(body["overview"]["pendingApproval"], 0)
+
+
+class TestE2E14BootstrapRoleView(E2EBase):
+    """E2E-14: /api/bootstrap shape is complete; non-admin sees no security events."""
+
+    def test_e2e_14(self):
+        _, admin = self.admin_login()
+        admin_token = admin["token"]
+        user = self.phone_login("13900000011")
+        self.create_sandbox(user, name="bootstrap-box")
+
+        for expected_key in ("user", "overview", "catalog", "templates", "settings", "policies", "agents", "sandboxes", "securityEvents"):
+            _, boot = self.request("GET", "/api/bootstrap", token=user)
+            self.assertIn(expected_key, boot, f"普通用户 bootstrap 缺 {expected_key}")
+
+        _, boot_user = self.request("GET", "/api/bootstrap", token=user)
+        self.assertEqual(boot_user["securityEvents"], [], "普通用户不得看到安全事件流")
+        self.assertEqual(boot_user["overview"]["total"], 1, "普通用户只看到自有沙箱指标")
+        self.assertEqual([p["id"] for p in sorted(boot_user["policies"], key=lambda p: p["id"])], ["balanced", "build", "review"])
+        self.assertEqual(len(boot_user["templates"]), 3)
+        self.assertIn("workspaceRoots", boot_user["settings"])
+
+        _, boot_admin = self.request("GET", "/api/bootstrap", token=admin_token)
+        self.assertGreaterEqual(len(boot_admin["securityEvents"]), 1, "管理员必须看到安全事件")
+        self.assertTrue(all("at" in e and "action" in e for e in boot_admin["securityEvents"]))
+        self.assertEqual(boot_admin["overview"]["role"], "admin")
+
+
+class TestE2E15WorkspaceRoots(E2EBase):
+    """E2E-15: workspaceRoots confines workspaces; root escape via ../ is blocked."""
+
+    def test_e2e_15(self):
+        _, admin = self.admin_login()
+        admin_token = admin["token"]
+        user = self.phone_login("13900000012")
+
+        # 非管理员不能改组织设置
+        status, _ = self.request("POST", "/api/settings", {"workspaceRoots": ["/srv/allowed"]}, token=user)
+        self.assertEqual(status, 403)
+
+        _, original = self.request("GET", "/api/settings", token=admin_token)
+        saved = dict(original["settings"])
+        try:
+            status, updated = self.request("POST", "/api/settings", {**saved, "workspaceRoots": ["/srv/allowed"]}, token=admin_token)
+            self.assertEqual(status, 200)
+            self.assertEqual(updated["settings"]["workspaceRoots"], ["/srv/allowed"])
+
+            # 落盘持久化
+            settings_file = json.loads((self.data_dir / "settings.json").read_text(encoding="utf-8"))
+            self.assertEqual(settings_file["workspaceRoots"], ["/srv/allowed"])
+
+            # 根目录之外一律 400（含根兄弟目录与 ../ 逃逸）
+            status, _ = self.create_sandbox(user, name="ws-out", workspace="/tmp/project")
+            self.assertEqual(status, 400)
+            status, _ = self.create_sandbox(user, name="ws-sibling", workspace="/srv/allowed-evil")
+            self.assertEqual(status, 400, "兄弟目录前缀不得被误认为根内")
+            status, _ = self.create_sandbox(user, name="ws-escape", workspace="/srv/allowed/../evil")
+            self.assertEqual(status, 400, "../ 逃逸必须被 realpath 拦截")
+
+            # 根本身与根内子目录放行
+            status, _ = self.create_sandbox(user, name="ws-root", workspace="/srv/allowed")
+            self.assertEqual(status, 201)
+            status, created = self.create_sandbox(user, name="ws-inner", workspace="/srv/allowed/team/proj")
+            self.assertEqual(status, 201)
+            self.assertEqual(created["sandbox"]["workspace"], "/srv/allowed/team/proj")
+        finally:
+            self.request("POST", "/api/settings", saved, token=admin_token)
+
+
+class TestE2E16RejectionFlow(E2EBase):
+    """E2E-16: rejection records reason/actor, emits a block event, and is terminal."""
+
+    def test_e2e_16(self):
+        _, admin = self.admin_login()
+        admin_token = admin["token"]
+        user = self.phone_login("13900000013")
+
+        _, created = self.create_sandbox(user, name="reject-target", purpose="越权数据抓取")
+        sandbox_id = created["sandbox"]["id"]
+        status, _ = self.request("POST", f"/api/sandboxes/{sandbox_id}/reject", token=user)
+        self.assertEqual(status, 403, "拒绝也是管理员专属动作")
+
+        status, rejected = self.request("POST", f"/api/sandboxes/{sandbox_id}/reject", {"reason": "用途超出批准范围"}, token=admin_token)
+        self.assertEqual(status, 200)
+        box = rejected["sandbox"]
+        self.assertEqual(box["status"], "rejected")
+        self.assertEqual(box["rejectReason"], "用途超出批准范围")
+        self.assertEqual(box["rejectedBy"], "admin")
+        self.assertIn("rejectedAt", box)
+        self.assertEqual(box["statusLabel"], "已拒绝")
+
+        # 终态：不可再次审批/拒绝/暂停/恢复
+        for action in ("approve", "reject", "pause", "resume"):
+            status, _ = self.request("POST", f"/api/sandboxes/{sandbox_id}/{action}", token=admin_token)
+            self.assertEqual(status, 409, f"rejected 后 {action} 必须 409")
+
+        # 拒绝产生 block 级安全事件
+        _, events = self.request("GET", "/api/events?level=block", token=admin_token)
+        self.assertTrue(any(e["action"] == "拒绝启动" and "用途超出批准范围" in e["detail"] for e in events["events"]))
+
+        # 不带 reason 走默认文案
+        _, second = self.create_sandbox(user, name="reject-default-2")
+        _, body = self.request("POST", f"/api/sandboxes/{second['sandbox']['id']}/reject", {}, token=admin_token)
+        self.assertEqual(body["sandbox"]["rejectReason"], "不符合安全策略")
+
+
+class TestE2E17EgressCredentialLifecycle(E2EBase):
+    """E2E-17: wildcard allowlist hosts pass policy; terminate invalidates the egress token."""
+
+    def test_e2e_17(self):
+        _, admin = self.admin_login()
+        admin_token = admin["token"]
+
+        self.request(
+            "POST", "/api/credentials",
+            {"name": "multi-host-e2e", "value": "mhe_secret", "allowedHosts": ["*.github.test", "api.corp.test"]},
+            token=admin_token,
+        )
+        _, created = self.create_sandbox(admin_token, name="egress-lifecycle", policyId="balanced", credentials=["multi-host-e2e"])
+        sandbox_id = created["sandbox"]["id"]
+        status, approved = self.request("POST", f"/api/sandboxes/{sandbox_id}/approve", token=admin_token)
+        self.assertEqual(status, 200)
+
+        stored = next(s for s in self.sandboxes_on_disk() if s["id"] == sandbox_id)
+        auth = base64.b64encode(f"{sandbox_id}:{stored['egressToken']}".encode()).decode()
+
+        # 通配符白名单：子域与域根都放行（走到上游 502），白名单外 403
+        self.assertEqual(self.proxy_request("GET", "http://api.github.test/user", auth), 502)
+        self.assertEqual(self.proxy_request("GET", "http://deep.api.github.test/x", auth), 502)
+        self.assertEqual(self.proxy_request("GET", "http://github.test/x", auth), 502)
+        self.assertEqual(self.proxy_request("GET", "http://api.corp.test/x", auth), 502)
+        self.assertEqual(self.proxy_request("GET", "http://notgithub.test/x", auth), 403)
+        self.assertEqual(self.proxy_request("GET", "http://github.test.evil.test/x", auth), 403)
+
+        # 终止 → 凭据与代理注册即刻失效
+        status, _ = self.request("POST", f"/api/sandboxes/{sandbox_id}/terminate", token=admin_token)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.proxy_request("GET", "http://api.github.test/user", auth), 407,
+                         "终止后旧 egressToken 必须失效")
+
+        # 事件流中出现 allow 决策（白名单内转发时记录）
+        _, events = self.request("GET", "/api/events?q=github.test", token=admin_token)
+        self.assertGreaterEqual(len(events["events"]), 1)
+
+
+class TestE2E18AuditRetentionPrune(E2EBase):
+    """E2E-18: startup prunes audit entries older than retainAuditDays and drops bad lines."""
+
+    OLD_MARK = "prune-old-marker-e2e18"
+    FRESH_MARK = "prune-fresh-marker-e2e18"
+
+    @classmethod
+    def prepare_data_dir(cls, data_dir: Path) -> None:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        old_at = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat().replace("+00:00", "Z")
+        fresh_at = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat().replace("+00:00", "Z")
+        lines = [
+            json.dumps({"id": "a", "level": "info", "action": "旧事件", "detail": cls.OLD_MARK, "at": old_at}, ensure_ascii=False),
+            json.dumps({"id": "b", "level": "info", "action": "新事件", "detail": cls.FRESH_MARK, "at": fresh_at}, ensure_ascii=False),
+            "{corrupted-line",
+        ]
+        (data_dir / "audit.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_e2e_18(self):
+        _, admin = self.admin_login()
+        admin_token = admin["token"]
+
+        # 40 天前的旧事件在启动时被 prune；2 天前的保留
+        status, history = self.request("GET", "/api/events?history=1&limit=200", token=admin_token)
+        self.assertEqual(status, 200)
+        details = json.dumps(history["events"], ensure_ascii=False)
+        self.assertNotIn(self.OLD_MARK, details, "超出保留期的事件必须被清理")
+        self.assertIn(self.FRESH_MARK, details, "保留期内的事件必须可查")
+
+        # 文件已被重写：无损坏行、无旧行，剩余行全部可解析
+        body = (self.data_dir / "audit.jsonl").read_text(encoding="utf-8")
+        self.assertNotIn("{corrupted-line", body)
+        self.assertNotIn(self.OLD_MARK, body)
+        for line in body.splitlines():
+            json.loads(line)
+
+
+class TestE2E19PhoneAdmin(E2EBase):
+    """E2E-19: SAFEDESK_ADMIN_PHONES upgrades the phone login to admin, without password."""
+
+    @classmethod
+    def extra_env(cls) -> dict:
+        return {"SAFEDESK_ADMIN_PHONES": "13900000099"}
+
+    def test_e2e_19(self):
+        admin_phone_token = self.phone_login("13900000099")
+        status, me = self.request("GET", "/api/auth/me", token=admin_phone_token)
+        self.assertEqual(status, 200)
+        self.assertEqual(me["user"]["role"], "admin", "白名单手机号必须获得管理员角色")
+        self.assertFalse(me["user"]["mustChangePassword"])
+        self.assertFalse(me["user"]["canChangePassword"], "手机号管理员无密码可改")
+
+        # 手机号管理员确实拥有管理权限
+        status, _ = self.request("GET", "/api/events", token=admin_phone_token)
+        self.assertEqual(status, 200)
+        status, _ = self.request("GET", "/api/credentials", token=admin_phone_token)
+        self.assertEqual(status, 200)
+
+        # 但没有密码散列，不允许走密码修改通道
+        status, body = self.request(
+            "POST", "/api/auth/password",
+            {"currentPassword": "x", "newPassword": "Whatever123"},
+            token=admin_phone_token,
+        )
+        self.assertEqual(status, 403)
+        self.assertIn("仅管理员账户", body["error"])
+
+        # 非白名单手机号依旧是普通用户
+        user = self.phone_login("13900000098")
+        status, me = self.request("GET", "/api/auth/me", token=user)
+        self.assertEqual(me["user"]["role"], "user")
+        status, _ = self.request("GET", "/api/events", token=user)
+        self.assertEqual(status, 403)
+
+
+class TestE2E20RestartContinuity(E2EBase):
+    """E2E-20: after a restart, sandboxes/settings/password change/sessions all survive."""
+
+    def test_e2e_20(self):
+        _, admin = self.admin_login()
+        admin_token = admin["token"]
+        user_token = self.phone_login("13900000020")
+
+        _, created = self.create_sandbox(user_token, name="restart-box")
+        sandbox_id = created["sandbox"]["id"]
+        status, _ = self.request("POST", f"/api/sandboxes/{sandbox_id}/approve", token=admin_token)
+        self.assertEqual(status, 200)
+
+        status, changed = self.request(
+            "POST", "/api/auth/password",
+            {"currentPassword": "SafeDesk@Admin", "newPassword": "Restart-Keep-9pass"},
+            token=admin_token,
+        )
+        self.assertEqual(status, 200)
+        _, settings = self.request("GET", "/api/settings", token=admin_token)
+        self.request("POST", "/api/settings", {**settings["settings"], "orgName": "重启验证组织"}, token=admin_token)
+
+        # 管理员改密会吊销其他全部会话（含用户态），用户需重新登录
+        status, _ = self.request("GET", "/api/sandboxes", token=user_token)
+        self.assertEqual(status, 401, "改密应吊销用户态会话")
+        user_token = self.phone_login("13900000020")
+
+        self.respawn()
+
+        # 改后的管理员密码生效，默认密码不再有效
+        status, _ = self.admin_login()
+        self.assertEqual(status, 400, "重启后默认密码不得复活")
+        status, relogin = self.admin_login(password="Restart-Keep-9pass")
+        self.assertEqual(status, 200)
+        self.assertFalse(relogin["user"]["mustChangePassword"])
+
+        # 重启前签发的用户会话仍有效，沙箱数据完整可见
+        status, listing = self.request("GET", "/api/sandboxes", token=user_token)
+        self.assertEqual(status, 200, "重启不得踢掉未过期会话")
+        stored = next(item for item in listing["sandboxes"] if item["id"] == sandbox_id)
+        self.assertEqual(stored["status"], "running")
+        self.assertEqual(stored["name"], "restart-box")
+
+        # 组织设置持久化
+        _, settings = self.request("GET", "/api/settings", token=relogin["token"])
+        self.assertEqual(settings["settings"]["orgName"], "重启验证组织")
+
+        # 重启后生命周期仍可操作（终止留存的沙箱清理现场）
+        status, terminated = self.request("POST", f"/api/sandboxes/{sandbox_id}/terminate", token=user_token)
+        self.assertEqual(status, 200)
+        self.assertEqual(terminated["sandbox"]["status"], "terminated")
 
 
 if __name__ == "__main__":
