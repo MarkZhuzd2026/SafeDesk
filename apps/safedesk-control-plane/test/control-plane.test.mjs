@@ -257,7 +257,7 @@ test('GET /api/catalog and /api/templates are public when auth is disabled', asy
   const catalog = await fetch(`${base}/api/catalog`).then((r) => r.json());
   assert.equal(catalog.policies.length, 3);
   const templates = await fetch(`${base}/api/templates`).then((r) => r.json());
-  assert.equal(templates.templates.length, 4);
+  assert.equal(templates.templates.length, 5);
 });
 
 test('GET /api/overview counts created sandboxes', async () => {

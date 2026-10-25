@@ -47,7 +47,7 @@ test('defaultSettings enables all three login methods by default', () => {
 
 // ---- defaultTemplates ----
 test('defaultTemplates contains exactly four templates', () => {
-  assert.equal(defaultTemplates.length, 4);
+  assert.equal(defaultTemplates.length, 5);
 });
 for (const template of defaultTemplates) {
   test(`template ${template.id} references a known policy and agent`, () => {

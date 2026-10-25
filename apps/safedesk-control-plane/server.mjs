@@ -9,6 +9,7 @@ import { CredentialBroker } from './src/broker.mjs';
 import { Launcher, workspaceAllowed } from './src/launch.mjs';
 import { EgressPolicy, ProxyRuntime, serve as serveProxy } from './src/proxy.mjs';
 import { aliasProfile } from './src/privacy.mjs';
+import { TravelerRegistry } from './src/travelers.mjs';
 import { defaultSettings, defaultTemplates, catalog, enrichSandbox, filterEvents, filterSandboxes, mergeSettings, overview as productOverview, riskFor } from './src/product.mjs';
 
 const PORT = Number(process.env.PORT ?? 8022);
@@ -22,6 +23,7 @@ const settingsFile = join(dataDir, 'settings.json');
 const auth = new AuthStore(dataDir);
 const auditLog = new AuditLog(join(dataDir, 'audit.jsonl'));
 const broker = new CredentialBroker(join(dataDir, 'credentials.json'));
+const travelers = new TravelerRegistry(join(dataDir, 'travelers.json'));
 const launcher = new Launcher(join(dataDir, 'runners'));
 const proxyRuntime = new ProxyRuntime();
 const PROXY_PORT = Number(process.env.SAFEDESK_EGRESS_PROXY_PORT ?? 0);
@@ -248,6 +250,38 @@ async function api(req, res, url) {
   if (req.method === 'GET' && pathname === '/api/sandboxes') {
     return json(res, 200, { sandboxes: filterSandboxes(visibleSandboxes(await loadSandboxes(), user), Object.fromEntries(url.searchParams)) });
   }
+  if (req.method === 'GET' && pathname === '/api/travelers') {
+    if (user.role !== 'admin') return json(res, 403, { error: '仅管理员可以执行此操作' });
+    return json(res, 200, { travelers: await travelers.listMasked() });
+  }
+  if (req.method === 'POST' && pathname === '/api/travelers') {
+    if (user.role !== 'admin') return json(res, 403, { error: '仅管理员可以执行此操作' });
+    try {
+      const input = await readBody(req);
+      const hosts = Array.isArray(input.allowedHosts) ? input.allowedHosts : [];
+      if (!Array.isArray(input.allowedHosts)) throw Object.assign(new Error('allowedHosts 必须是数组'), { statusCode: 400 });
+      const card = await travelers.register(
+        String(input.handle || '').trim(), String(input.name || ''), String(input.idCard || ''),
+        String(input.phone || ''), hosts, input.passport ? String(input.passport) : null,
+      );
+      event('allow', '登记出行人卡片', `${card.handle} 已登记（目的地白名单 ${card.allowedHosts.length} 条）`, user.id);
+      return json(res, 200, { traveler: card });
+    } catch (error) {
+      return json(res, error.statusCode ?? 400, { error: error.message });
+    }
+  }
+  if (req.method === 'POST' && pathname === '/api/travelers/delete') {
+    if (user.role !== 'admin') return json(res, 403, { error: '仅管理员可以执行此操作' });
+    try {
+      const input = await readBody(req);
+      const removed = await travelers.remove(String(input.handle || '').trim());
+      if (!removed) return json(res, 404, { error: '未找到出行人卡片' });
+      event('info', '注销出行人卡片', `${String(input.handle || '').trim()} 已删除`, user.id);
+      return json(res, 200, { ok: true });
+    } catch (error) {
+      return json(res, error.statusCode ?? 400, { error: error.message });
+    }
+  }
   if (req.method === 'GET' && pathname === '/api/credentials') {
     if (user.role !== 'admin') return json(res, 403, { error: '仅管理员可以执行此操作' });
     return json(res, 200, { credentials: await broker.listMasked() });
@@ -317,10 +351,17 @@ async function api(req, res, url) {
       purpose: String(input.purpose || '').trim().slice(0, 160),
       notes: String(input.notes || '').trim().slice(0, 240),
       privacyCurtain: Boolean(input.privacy),
+      travelerCards: Array.isArray(input.travelerCards) ? input.travelerCards.map(String).slice(0, 4) : [],
       risk: riskFor(policyId),
       status: 'pending_approval', createdAt: new Date().toISOString(),
       ownerId: user.id, ownerName: user.displayName || user.username || user.id,
     };
+    const unknownTravelers = [];
+    for (const handle of sandbox.travelerCards) {
+      if (!(await travelers.get(handle))) unknownTravelers.push(handle);
+    }
+    if (unknownTravelers.length) return json(res, 400, { error: `未知出行人卡片：${unknownTravelers.join(',')}` });
+    sandbox.travelerPlaceholders = travelers.issuePlaceholders(sandbox);
     sandbox.credentialPlaceholders = broker.issuePlaceholders(sandbox);
     const settings = await loadSettings();
     const sandboxes = await loadSandboxes();
@@ -370,6 +411,7 @@ async function api(req, res, url) {
               if (placeholder) injections[placeholder] = { value: item.value, hosts: item.allowedHosts };
             }
           }
+          Object.assign(injections, await travelers.resolveInjections(sandbox));
           const alias = sandbox.privacyCurtain ? aliasProfile(id) : null;
           proxyRuntime.register(id, token, new EgressPolicy([...allowed], injections, alias));
           manifest.egress = { token };

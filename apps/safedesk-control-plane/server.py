@@ -22,6 +22,7 @@ from policy import ALLOWED_AGENTS, POLICIES, compile_manifest
 from privacy import alias_profile
 from product import DEFAULT_TEMPLATES, catalog, enrich_sandbox, filter_events, filter_sandboxes, merge_settings, overview as product_overview, risk_for
 from proxy import EgressPolicy, ProxyRuntime, serve as serve_proxy
+from travelers import TravelerRegistry
 
 ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = ROOT / "static"
@@ -38,6 +39,7 @@ EVENTS = [
 ]
 AUDIT_LOG = None  # initialized after load_settings()
 BROKER = CredentialBroker(DATA_DIR / "credentials.json")
+TRAVELERS = TravelerRegistry(DATA_DIR / "travelers.json")
 LAUNCHER = Launcher(DATA_DIR / "runners")
 PROXY_RT = ProxyRuntime()
 PROXY_SERVER = None
@@ -269,6 +271,12 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 return
             self.send_json(200, {"credentials": BROKER.list_masked()})
             return
+        if urlsplit(self.path).path == "/api/travelers":
+            user = self.require_admin()
+            if user is None:
+                return
+            self.send_json(200, {"travelers": TRAVELERS.list_masked()})
+            return
         match = re.fullmatch(r"/api/sandboxes/(sbx-[\w-]+)(?:/(manifest|activity))?", urlsplit(self.path).path)
         if match and match.group(2) in (None, "manifest", "activity"):
             user = self.require_user()
@@ -369,6 +377,43 @@ class ApiHandler(SimpleHTTPRequestHandler):
             except ValueError as error:
                 self.send_json(400, {"error": str(error)})
             return
+        if self.path == "/api/travelers":
+            user = self.require_admin()
+            if user is None:
+                return
+            try:
+                payload = self.body()
+                hosts = payload.get("allowedHosts") or []
+                if not isinstance(hosts, list):
+                    raise ValueError("allowedHosts 必须是数组")
+                card = TRAVELERS.register(
+                    str(payload.get("handle", "")).strip(),
+                    str(payload.get("name", "")),
+                    str(payload.get("idCard", "")),
+                    str(payload.get("phone", "")),
+                    hosts,
+                    passport=str(payload.get("passport", "")).strip() or None,
+                )
+                security_event("allow", "登记出行人", f"{card['handle']} 出行人卡片已登记（掩码展示）", user["id"])
+                self.send_json(200, {"traveler": card})
+            except ValueError as error:
+                self.send_json(400, {"error": str(error)})
+            return
+        if self.path == "/api/travelers/delete":
+            user = self.require_admin()
+            if user is None:
+                return
+            try:
+                payload = self.body()
+                handle = str(payload.get("handle", "")).strip()
+                if not TRAVELERS.remove(handle):
+                    self.send_json(404, {"error": "未找到出行人卡片"})
+                    return
+                security_event("info", "注销出行人", f"{handle} 出行人卡片已删除", user["id"])
+                self.send_json(200, {"ok": True})
+            except ValueError as error:
+                self.send_json(400, {"error": str(error)})
+            return
         if self.path == "/api/credentials":
             user = self.require_admin()
             if user is None:
@@ -428,10 +473,15 @@ class ApiHandler(SimpleHTTPRequestHandler):
                     "purpose": str(payload.get("purpose") or "").strip()[:160],
                     "notes": str(payload.get("notes") or "").strip()[:240],
                     "privacyCurtain": bool(payload.get("privacy", False)),
+                    "travelerCards": [str(handle) for handle in list(payload.get("travelerCards") or [])[:4]],
                     "risk": risk_for(policy_id),
                     "status": "pending_approval", "createdAt": iso_now(),
                     "ownerId": user["id"], "ownerName": user.get("displayName") or user.get("username") or user["id"],
                 }
+                unknown_travelers = [handle for handle in sandbox["travelerCards"] if not TRAVELERS.get(handle)]
+                if unknown_travelers:
+                    self.send_json(400, {"error": f"未知出行人卡片：{','.join(unknown_travelers)}"}); return
+                sandbox["travelerPlaceholders"] = TRAVELERS.issue_placeholders(sandbox)
                 sandbox["credentialPlaceholders"] = BROKER.issue_placeholders(sandbox)
                 with LOCK:
                     settings = load_settings()
@@ -491,6 +541,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
                                 placeholder = (sandbox.get("credentialPlaceholders") or {}).get(capability)
                                 if placeholder:
                                     injections[placeholder] = {"value": item["value"], "hosts": item["allowedHosts"]}
+                        injections.update(TRAVELERS.resolve_injections(sandbox))
                         alias = alias_profile(sandbox_id) if sandbox.get("privacyCurtain") else None
                         PROXY_RT.register(sandbox_id, token, EgressPolicy(sorted(allowed), injections, alias))
                         manifest["egress"] = {"token": token}

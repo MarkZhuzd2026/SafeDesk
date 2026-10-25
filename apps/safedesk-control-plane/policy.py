@@ -29,5 +29,6 @@ def compile_manifest(sandbox: dict) -> dict:
         "environment": dict(sandbox.get("credentialPlaceholders") or {}),
         "mcpGateway": {"enabled": True, "transport": "streamable-http", "allowedServers": sandbox["mcpServers"]},
         "privacy": {"curtain": bool(sandbox.get("privacyCurtain")), "alias": alias_profile(sandbox["id"]) if sandbox.get("privacyCurtain") else None},
+        "travelers": {"cards": list(sandbox.get("travelerCards") or []), "valuesExposed": False},
         "enforcement": {"approval": policy["approval"], "maxCpu": policy["maxCpu"], "maxMemoryMb": policy["maxMemoryMb"], "audit": "append-only"},
     }

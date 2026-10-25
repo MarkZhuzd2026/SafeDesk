@@ -11,6 +11,7 @@ Four copy-paste demo scenarios covering the full sandbox lifecycle and security 
 | [03-restricted-build](./03-restricted-build.md) | 受限构建 | `build` 策略：临时工作区 + 出网白名单复核 |
 | [04-guardrails](./04-guardrails.md) | 防护与拒绝路径 | 400 / 404 / 409：不合法输入与非法状态跳转被拒 |
 | [05-private-takeout](./05-private-takeout.md) | 外卖隐私下单 | 隐私帘：别名替身 + PII 脱敏 + 支付凭据代签，平台拿不到真实身份和支付信息 |
+| [06-ctrip-corporate-travel](./06-ctrip-corporate-travel.md) | 携程公务出行订票 | 出行人卡片：实名出票信息主机侧托管，仅对携程白名单解析注入，平台拿不到员工账户画像和支付渠道 |
 
 ## 前置条件 / Prerequisites
 

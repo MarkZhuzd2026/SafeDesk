@@ -64,6 +64,18 @@ export const defaultTemplates = [
     privacy: true,
     purpose: '隐私保护下单：姓名/手机号/地址用沙箱别名替身，支付凭据主机代签，平台拿到的信息全部脱敏。',
   },
+  {
+    id: 'tpl-ctrip',
+    name: '携程公务出行订票',
+    agent: 'dsh',
+    policyId: 'balanced',
+    workspace: '/srv/travel/bookings',
+    credentials: ['ctrip-pay'],
+    mcpServers: [],
+    privacy: true,
+    travelerCards: [],
+    purpose: '出行人卡片托管：实名出票信息主机侧登记，沙箱只持占位符，平台拿到票但不知为哪位员工且拿不到支付渠道。',
+  },
 ];
 
 export function riskFor(policyId) {
@@ -83,7 +95,7 @@ export function catalog() {
     })),
     agents: Object.entries(allowedAgents).map(([id, value]) => ({ id, ...value, supported: true })),
     capabilities: {
-      credentials: ['github-read', 'gitlab-read', 'openai-proxy', 'anthropic-proxy', 'internal-mcp', 'meituan-proxy'],
+      credentials: ['github-read', 'gitlab-read', 'openai-proxy', 'anthropic-proxy', 'internal-mcp', 'meituan-proxy', 'ctrip-pay'],
       mcpServers: ['github', 'gitlab', 'jira', 'confluence', 'browser', 'docs'],
     },
   };

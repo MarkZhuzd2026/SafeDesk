@@ -91,16 +91,25 @@ def redact_pii(text: str) -> tuple[str, list[str]]:
     return value, hits
 
 
+MANAGED_PLACEHOLDER_PREFIXES = ("{{SD_CRED_", "{{SD_TRV_")
+
+
+def _is_managed_placeholder(value) -> bool:
+    return isinstance(value, str) and value.startswith(MANAGED_PLACEHOLDER_PREFIXES)
+
+
 def anonymize_order_fields(payload: dict, alias: dict) -> tuple[dict, list[str]]:
     """Rewrite identity fields of an order-like dict to the sandbox alias.
     Returns (new_payload, swap_tags). Redaction runs first so the alias
-    values themselves are never re-redacted."""
+    values themselves are never re-redacted. Managed placeholders
+    (credentials / traveler cards) pass through untouched — they are
+    destination-bound and resolved host-side after the curtain."""
     if not isinstance(payload, dict):
         return payload, []
     result = dict(payload)
     swaps: list[str] = []
     for key, value in result.items():
-        if isinstance(value, str):
+        if isinstance(value, str) and not _is_managed_placeholder(value):
             redacted, hits = redact_pii(value)
             if hits:
                 result[key] = redacted
@@ -108,7 +117,7 @@ def anonymize_order_fields(payload: dict, alias: dict) -> tuple[dict, list[str]]
 
     def swap(keys: set[str], replacement: str, tag: str) -> None:
         for key in list(result.keys()):
-            if key in keys and result.get(key):
+            if key in keys and result.get(key) and not _is_managed_placeholder(result[key]):
                 if result[key] != replacement:
                     result[key] = replacement
                     swaps.append(tag)

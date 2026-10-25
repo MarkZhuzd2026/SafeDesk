@@ -79,6 +79,19 @@ export class EgressPolicy {
     }
     return [result, null];
   }
+
+  injectBody(host, text) {
+    if (!text) return [text, null];
+    for (const [placeholder, entry] of Object.entries(this.injections)) {
+      if (text.includes(placeholder)) {
+        if (!EgressPolicy._hostsAllow(host, entry.hosts || [])) {
+          return ['', `凭据不允许发送到 ${host}`];
+        }
+        text = text.split(placeholder).join(entry.value);
+      }
+    }
+    return [text, null];
+  }
 }
 
 export class ProxyRuntime {
@@ -168,26 +181,21 @@ export function serve(runtime, host = '127.0.0.1', port = 0, options = {}) {
         headers[key] = value;
       }
       headers.host = target.host;
-      const [injected, injectError] = entry.policy.injectHeaders(hostName, headers);
-      if (injectError) return deny(runtime, req, res, 403, injectError);
-      const port = Number(target.port || 80);
-      const outboundTarget = connectTarget ? connectTarget(hostName, port) : { host: hostName, port };
-      let body;
+      const rawChunks = [];
+      for await (const chunk of req) rawChunks.push(chunk);
+      let body = Buffer.concat(rawChunks);
+      // 1) Privacy curtain: scrub identity before anything leaves the sandbox.
       if (entry.policy.alias) {
-        const chunks = [];
-        for await (const chunk of req) chunks.push(chunk);
-        const rawBody = Buffer.concat(chunks);
-        let headerHits = 0;
-        for (const key of Object.keys(injected)) {
-          const [redacted, hits] = redactPii(String(injected[key]));
-          injected[key] = redacted;
-          headerHits += hits.length;
+        let totalHits = 0;
+        for (const key of Object.keys(headers)) {
+          const [redacted, hits] = redactPii(String(headers[key]));
+          headers[key] = redacted;
+          totalHits += hits.length;
         }
-        injected['x-safedesk-alias-id'] = entry.policy.alias.aliasId;
-        let totalHits = headerHits;
-        if (rawBody.length) {
+        headers['x-safedesk-alias-id'] = entry.policy.alias.aliasId;
+        if (body.length) {
           const contentType = String(req.headers['content-type'] || '').toLowerCase();
-          const text = rawBody.toString('utf8');
+          const text = body.toString('utf8');
           if (contentType.includes('json')) {
             try {
               const [payload, swaps] = anonymizeOrderFields(JSON.parse(text), entry.policy.alias);
@@ -205,8 +213,18 @@ export function serve(runtime, host = '127.0.0.1', port = 0, options = {}) {
           }
         }
         if (totalHits) runtime.record('info', `${req.method} ${hostName} 个人信息脱敏 ${totalHits} 项`);
-        if (body !== undefined) injected['content-length'] = String(body.length);
       }
+      // 2) Destination-bound injection runs last (host-trusted re-inflation).
+      const [injected, injectError] = entry.policy.injectHeaders(hostName, headers);
+      if (injectError) return deny(runtime, req, res, 403, injectError);
+      if (body.length) {
+        const [resolved, bodyError] = entry.policy.injectBody(hostName, body.toString('utf8'));
+        if (bodyError) return deny(runtime, req, res, 403, bodyError);
+        body = Buffer.from(resolved, 'utf8');
+      }
+      if (body.length) injected['content-length'] = String(body.length);
+      const port = Number(target.port || 80);
+      const outboundTarget = connectTarget ? connectTarget(hostName, port) : { host: hostName, port };
       return new Promise((resolveOutbound) => {
         const outbound = http.request({
           host: outboundTarget.host,
@@ -225,8 +243,7 @@ export function serve(runtime, host = '127.0.0.1', port = 0, options = {}) {
           resolveOutbound();
         });
         res.on('finish', () => runtime.record('allow', `${req.method} ${hostName} 放行`));
-        if (body) outbound.write(body);
-        else req.pipe(outbound);
+        if (body.length) outbound.write(body);
         outbound.end();
       });
     } catch (error) {

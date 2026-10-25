@@ -281,7 +281,7 @@ class ControlPlaneApiTest(unittest.TestCase):
         self.assertEqual(len(catalog["policies"]), 3)
         status, templates = self.request("GET", "/api/templates")
         self.assertEqual(status, 200)
-        self.assertEqual(len(templates["templates"]), 4)
+        self.assertEqual(len(templates["templates"]), 5)
 
     def test_overview_counts_created_sandboxes(self):
         self.create_sandbox(name="overview-box")

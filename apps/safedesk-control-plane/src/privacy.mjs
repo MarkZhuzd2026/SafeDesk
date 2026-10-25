@@ -68,13 +68,21 @@ export function redactPii(text) {
   return [value, hits];
 }
 
+const MANAGED_PLACEHOLDER_PREFIXES = ['{{SD_CRED_', '{{SD_TRV_'];
+
+function isManagedPlaceholder(value) {
+  return typeof value === 'string' && MANAGED_PLACEHOLDER_PREFIXES.some((prefix) => value.startsWith(prefix));
+}
+
 export function anonymizeOrderFields(payload, alias) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return [payload, []];
   const result = { ...payload };
   const swaps = [];
   // Redaction runs first so the alias values themselves are never re-redacted.
+  // Managed placeholders (credentials / traveler cards) pass through untouched —
+  // they are destination-bound and resolved host-side after the curtain.
   for (const [key, value] of Object.entries(result)) {
-    if (typeof value === 'string') {
+    if (typeof value === 'string' && !isManagedPlaceholder(value)) {
       const [redacted, hits] = redactPii(value);
       if (hits.length) {
         result[key] = redacted;
@@ -84,7 +92,7 @@ export function anonymizeOrderFields(payload, alias) {
   }
   const swap = (keys, replacement, tag) => {
     for (const key of Object.keys(result)) {
-      if (keys.has(key) && result[key]) {
+      if (keys.has(key) && result[key] && !isManagedPlaceholder(result[key])) {
         if (result[key] !== replacement) {
           result[key] = replacement;
           swaps.push(tag);

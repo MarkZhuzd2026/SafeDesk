@@ -60,6 +60,7 @@ export function compileManifest(sandbox) {
     environment: { ...(sandbox.credentialPlaceholders || {}) },
     mcpGateway: { enabled: true, transport: 'streamable-http', allowedServers: sandbox.mcpServers },
     privacy: { curtain: Boolean(sandbox.privacyCurtain), alias: sandbox.privacyCurtain ? aliasProfile(sandbox.id) : null },
+    travelers: { cards: [...(sandbox.travelerCards || [])], valuesExposed: false },
     enforcement: { approval: policy.approval, maxCpu: policy.maxCpu, maxMemoryMb: policy.maxMemoryMb, audit: 'append-only' },
   };
 }

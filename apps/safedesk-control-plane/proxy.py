@@ -97,6 +97,18 @@ class EgressPolicy:
             result[key] = entry["value"]
         return result, None
 
+    def inject_body(self, host: str, text: str) -> tuple[str, str | None]:
+        """Body-level placeholder resolution (traveler cards, ticket booking).
+        Placeholders inside the request body resolve only for allowlisted destinations."""
+        if not text:
+            return text, None
+        for placeholder, entry in self.injections.items():
+            if placeholder in text:
+                if not self._hosts_allow(host, entry.get("hosts", [])):
+                    return "", f"凭据不允许发送到 {host}"
+                text = text.replace(placeholder, entry["value"])
+        return text, None
+
 
 class ProxyRuntime:
     """Sandbox registrations plus the allow/block decision event sink."""
@@ -253,15 +265,11 @@ def make_handler(runtime: ProxyRuntime):
                 return
             headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_HEADERS}
             headers["Host"] = target.netloc
-            headers, inject_error = entry["policy"].inject_headers(host, headers)
-            if inject_error:
-                self._deny(403, inject_error)
-                return
             body = b""
             size = int(self.headers.get("Content-Length", "0") or 0)
             if size:
                 body = self.rfile.read(size)
-            # Privacy curtain: scrub identity before anything leaves the sandbox.
+            # 1) Privacy curtain: scrub identity before anything leaves the sandbox.
             if entry["policy"].alias:
                 alias = entry["policy"].alias
                 scrubbed_headers = {}
@@ -291,6 +299,17 @@ def make_handler(runtime: ProxyRuntime):
                         hits_all += len(hits)
                 if hits_all:
                     runtime.record("info", f"{self.command} {host} 个人信息脱敏 {hits_all} 项")
+            # 2) Destination-bound injection runs last (host-trusted re-inflation).
+            headers, inject_error = entry["policy"].inject_headers(host, headers)
+            if inject_error:
+                self._deny(403, inject_error)
+                return
+            if body:
+                text, body_error = entry["policy"].inject_body(host, body.decode("utf-8", "replace"))
+                if body_error:
+                    self._deny(403, body_error)
+                    return
+                body = text.encode("utf-8")
             port = target.port or (443 if target.scheme == "https" else 80)
             cls = http.client.HTTPSConnection if target.scheme == "https" else http.client.HTTPConnection
             conn = cls(host, port, timeout=30)

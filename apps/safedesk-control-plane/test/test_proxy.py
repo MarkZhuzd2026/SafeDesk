@@ -256,3 +256,121 @@ class PrivacyCurtainProxyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CtripBookingHandler(http.server.BaseHTTPRequestHandler):
+    """Mock 携程平台：回显收到的 JSON 体与别名头。"""
+
+    def do_POST(self):
+        size = int(self.headers.get("Content-Length", "0") or 0)
+        raw = self.rfile.read(size) if size else b""
+        body = json.dumps({"body": raw.decode("utf-8"), "aliasHeader": self.headers.get("X-Safedesk-Alias-Id")}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        return
+
+
+TRIP_NAME_PH = "{{SD_TRV_sbx-trip_traveller-li_name_ab123456}}"
+TRIP_ID_PH = "{{SD_TRV_sbx-trip_traveller-li_idCard_ab123456}}"
+TRIP_PHONE_PH = "{{SD_TRV_sbx-trip_traveller-li_phone_ab123456}}"
+TRIP_PAY_PH = "{{SD_CRED_sbx-trip_pay}}"
+
+
+class CtripCurtainProxyTest(unittest.TestCase):
+    """携程订票场景：实名出票字段只在白名单域上被代理解析，沙箱内只有占位符。"""
+
+    ORIGIN_HOST = "api.ctrip.demo.local"
+
+    def setUp(self):
+        self.runtime = ProxyRuntime()
+        self.runtime.register("sbx-trip", "tok-trip", EgressPolicy(
+            [self.ORIGIN_HOST],
+            {
+                TRIP_NAME_PH: {"value": "李雷", "hosts": [self.ORIGIN_HOST]},
+                TRIP_ID_PH: {"value": "110101199003071234", "hosts": [self.ORIGIN_HOST]},
+                TRIP_PHONE_PH: {"value": "13812345678", "hosts": [self.ORIGIN_HOST]},
+                TRIP_PAY_PH: {"value": "pay-token-ctrip-7f20", "hosts": [self.ORIGIN_HOST]},
+            },
+            alias_profile("sbx-trip"),
+        ))
+        self.runtime.register("sbx-trip-bad", "tok-bad", EgressPolicy(
+            [self.ORIGIN_HOST],
+            {TRIP_NAME_PH: {"value": "李雷", "hosts": ["other.not-allowed"]}},
+        ))
+        self.proxy = serve(self.runtime, "127.0.0.1", 0)
+        self.proxy_port = self.proxy.server_port
+        self.origin = http.server.ThreadingHTTPServer(("127.0.0.1", 0), CtripBookingHandler)
+        threading.Thread(target=self.origin.serve_forever, daemon=True).start()
+        self.origin_port = self.origin.server_port
+        self.dns_patch = unittest.mock.patch.object(proxy_module, "resolve_host", return_value=["93.184.216.34"])
+        self.dns_patch.start()
+        real_connect = socket.create_connection
+
+        def rerouted(address, *args, **kwargs):
+            host, port = address
+            if host == self.ORIGIN_HOST and port == self.origin_port:
+                return real_connect(("127.0.0.1", self.origin_port), *args, **kwargs)
+            return real_connect(address, *args, **kwargs)
+
+        self.conn_patch = unittest.mock.patch("socket.create_connection", side_effect=rerouted)
+        self.conn_patch.start()
+
+    def tearDown(self):
+        self.conn_patch.stop()
+        self.dns_patch.stop()
+        self.proxy.shutdown()
+        self.origin.shutdown()
+
+    def post_booking(self, payload: dict, auth: str = "sbx-trip:tok-trip", extra_headers: dict | None = None) -> tuple[int, dict]:
+        raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        conn = http.client.HTTPConnection("127.0.0.1", self.proxy_port, timeout=5)
+        headers = {
+            "Proxy-Authorization": "Basic " + base64.b64encode(auth.encode()).decode(),
+            "Content-Type": "application/json",
+            "Content-Length": str(len(raw)),
+        }
+        headers.update(extra_headers or {})
+        conn.request("POST", f"http://{self.ORIGIN_HOST}:{self.origin_port}/openapi/book", body=raw, headers=headers)
+        resp = conn.getresponse()
+        text = resp.read().decode("utf-8", "replace")
+        conn.close()
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            data = {"errorBody": text}
+        return resp.status, data
+
+    def test_treveler_placeholders_resolved_host_side(self):
+        payload = {
+            "traveler": {"name": TRIP_NAME_PH, "idCard": TRIP_ID_PH, "phone": TRIP_PHONE_PH},
+            "note": "紧急电话 13812345678 别漏接",
+            "route": "北京-上海 CA1837",
+        }
+        status, echoed = self.post_booking(payload, extra_headers={"Authorization": TRIP_PAY_PH})
+        self.assertEqual(status, 200)
+        body = json.loads(echoed["body"])
+        traveler = body["traveler"]
+        self.assertEqual(traveler["name"], "李雷")
+        self.assertEqual(traveler["idCard"], "110101199003071234")
+        self.assertEqual(traveler["phone"], "13812345678")
+        self.assertNotIn("SD_TRV", echoed["body"])
+        self.assertIn("[*手机号*]", body["note"])
+        self.assertNotIn("13812345678", body["note"])
+        self.assertEqual(body["route"], payload["route"])
+        self.assertEqual(echoed["aliasHeader"], alias_profile("sbx-trip")["aliasId"])
+
+    def test_body_placeholder_blocked_for_other_hosts(self):
+        status, echoed = self.post_booking(
+            {"traveler": {"name": TRIP_NAME_PH}}, auth="sbx-trip-bad:tok-bad")
+        self.assertEqual(status, 403)
+        self.assertIn("egress denied", json.dumps(echoed))
+        self.assertTrue(any("不允许" in event["detail"] for event in self.runtime.snapshot_events()))
+
+
+if __name__ == "__main__":
+    unittest.main()

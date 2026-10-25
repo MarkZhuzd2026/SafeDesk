@@ -799,7 +799,7 @@ class TestE2E14BootstrapRoleView(E2EBase):
         self.assertEqual(boot_user["securityEvents"], [], "普通用户不得看到安全事件流")
         self.assertEqual(boot_user["overview"]["total"], 1, "普通用户只看到自有沙箱指标")
         self.assertEqual([p["id"] for p in sorted(boot_user["policies"], key=lambda p: p["id"])], ["balanced", "build", "review"])
-        self.assertEqual(len(boot_user["templates"]), 4)
+        self.assertEqual(len(boot_user["templates"]), 5)
         self.assertIn("workspaceRoots", boot_user["settings"])
 
         _, boot_admin = self.request("GET", "/api/bootstrap", token=admin_token)
