@@ -39,3 +39,6 @@ result-*
 
 # SafeDesk custom sandbox image manifests
 !apps/safedesk-images/**/wasmer.toml
+
+# Demo video artifacts (regenerable via demos/tools/make_demo_gif.py)
+artifacts/
