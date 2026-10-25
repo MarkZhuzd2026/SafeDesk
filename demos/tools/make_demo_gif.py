@@ -75,6 +75,61 @@ def title_scene(kicker: str, title: str, subtitle: str) -> list:
 
 SCENES = [
     (
+        "demo shell — 美团订餐 · 隐私帘替身模型",
+        [
+            ("$ curl -X POST /api/credentials -d '{\"name\":\"meituan-proxy\",\"value\":\"pay-token-real-9f81\",\"allowedHosts\":[\"api.meituan.demo.local\"]}'", GREEN),
+            ('  → {"credential":{"name":"meituan-proxy","masked":"pay-****","allowedHosts":["api.meituan.demo.local"]}}', FG),
+            ("  ① 支付凭据登记：返回值只有掩码，真实 pay-token 不回显", AMBER),
+            ("", FG),
+        ],
+    ),
+    (
+        "demo shell — 创建隐私沙箱 + 审批",
+        [
+            ("$ curl -X POST /api/sandboxes -d '{\"agent\":\"dsh\",\"policyId\":\"balanced\",", GREEN),
+            ('    "credentials":["meituan-proxy"],"privacy":true,"workspace":"/srv/orders/takeout"}\'', FG),
+            ("  → 201 pending_approval   启动清单 (SandboxLaunchPlan)：", CYAN),
+            ('  manifest.privacy = {"curtain":true,"alias":{"aliasId":"sf-e516a83c","name":"访客-E516",', FG),
+            ('    "phone":"13850866770","address":"SafeDesk 智能自提柜C85"}}  ← 平台只见替身身份', AMBER),
+            ("", FG),
+            ("$ curl -X POST /api/sandboxes/SID/approve", GREEN),
+            ('  → {"status":"running","runtime":{"mode":"wasmer","pid":70554,"command":"/usr/local/bin/wasmer"}}', FG),
+            ("  审批后真实拉起 wasmer；出口代理挂上隐私帘（替身互换 + PII 脱敏 + 支付代签）", AMBER),
+        ],
+    ),
+    (
+        "出口代理视角 — 平台收到的请求（meituan.demo.local）",
+        [
+            ("沙箱发出（agent 手滑直接填了真实信息）：", CYAN),
+            ('  POST /api/v1/order {"name":"张伟","phone":"13812345678","address":"滨江路88号春天花园3栋1201",', FG),
+            ('    "cardNo":"4111111111111111","items":[{"name":"黄焖鸡米饭","count":1}],"note":"电话 13812345678 联系"}', FG),
+            ("", FG),
+            ("美团平台实际收到（替身互换 + 脱敏 + 卡号丢弃）：", CYAN),
+            ('  {"name":"访客-E516","phone":"13850866770","address":"SafeDesk 智能自提柜C85",', GREEN),
+            ('   "items":[{"name":"黄焖鸡米饭","count":1}],"note":"电话 [*手机号*] 联系"}', GREEN),
+            ("  ✓ 姓名/替身手机号/小区门牌/卡号均未出沙箱；菜品原样保留；连备注里的真号也被消掉", AMBER),
+        ],
+    ),
+    (
+        "出口代理视角 — 支付代签与审计",
+        [
+            ("沙箱请求头：", CYAN),
+            ('  Authorization: {{SD_CRED_sbx-takeout_pay}}   ← 沙箱内只有占位符', FG),
+            ("  平台实际收到的支付凭证：", CYAN),
+            ("  Authorization: pay-token-real-9f81    ← 仅对 api.meituan.demo.local 在主机侧注入", GREEN),
+            ("  ✓ 沙箱进程拿不到真凭证；注入失败 = 403 而不是泄漏", AMBER),
+            ("", FG),
+            ("审计落盘（audit.jsonl）：", CYAN),
+            ("  allow  注册凭据   meituan-proxy 已登记，目的地白名单 1 条", FG),
+            ("  allow  人工审批    takeout-order 已启动（wasmer 模式）", FG),
+            ("  info   网络决策    POST meituan.demo.l… 个人信息脱敏 4 项", FG),
+            ("  block  终止沙箱    takeout-order 已终止，短期会话凭据失效", FG),
+        ],
+    ),
+]
+
+CTRIP_CI_SCENES = [
+    (
         "demo shell — 携程公务订票 · 隐私帘",
         [
             ("$ curl -X POST /api/credentials -d '{\"name\":\"ctrip-pay\",\"value\":\"pay-token-ctrip-real\",\"allowedHosts\":[\"api.ctrip.demo.local\"]}'", GREEN),
@@ -207,23 +262,31 @@ def wrap_line(text: str, color) -> list:
     return [(piece, color) for piece in pieces]
 
 
-def build() -> list:
+def build(scenario: str = "ctrip-ci") -> list:
     frames = []
-    frames += title_scene("SAFEDESK · 场景演示 1/2", "携程公务订票（隐私帘）", "实名出票仅对携程白名单解析注入 · 平台拿不到员工画像与支付渠道")
-    for header, lines in SCENES[:4]:
-        frames += scene_frames(header, lines)
-    frames += title_scene("SAFEDESK · 场景演示 2/2", "CI 打包（build 策略）", "自定义 WAPM 镜像 → approve 真实拉起 → guest 内跑完 CI 流水线")
-    for header, lines in SCENES[4:]:
-        frames += scene_frames(header, lines)
+    if scenario == "meituan":
+        frames += title_scene("SAFEDESK · 场景演示", "美团订餐（隐私帘）", "替身模型：姓名/手机号/地址/卡号不出沙箱 · 支付凭据主机代签")
+        for header, lines in SCENES:
+            frames += scene_frames(header, lines)
+    else:
+        frames += title_scene("SAFEDESK · 场景演示 1/2", "携程公务订票（隐私帘）", "实名出票仅对携程白名单解析注入 · 平台拿不到员工画像与支付渠道")
+        for header, lines in CTRIP_CI_SCENES[:4]:
+            frames += scene_frames(header, lines)
+        frames += title_scene("SAFEDESK · 场景演示 2/2", "CI 打包（build 策略）", "自定义 WAPM 镜像 → approve 真实拉起 → guest 内跑完 CI 流水线")
+        for header, lines in CTRIP_CI_SCENES[4:]:
+            frames += scene_frames(header, lines)
     frames += title_scene("SAFEDESK", "安全优先 · 配置友好", "演示数据全部为假名/假卡/演示域名 · 录制过程零本机信息")
     return frames
 
 
 def main() -> None:
+    import sys
+
+    scenario = sys.argv[1] if len(sys.argv) > 1 else "ctrip-ci"
     out_dir = Path(os.environ.get("SAFEDESK_VIDEO_OUT", "artifacts/demo"))
     out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / "safedesk-ctrip-ci-demo.gif"
-    frames = build()
+    out = out_dir / (f"safedesk-meituan-takeout-demo.gif" if scenario == "meituan" else "safedesk-ctrip-ci-demo.gif")
+    frames = build(scenario)
     fg = frames[0].convert("P", palette=Image.ADAPTIVE, colors=200)
     fg.save(
         out,
